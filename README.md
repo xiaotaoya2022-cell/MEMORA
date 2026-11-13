@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/icon.png" width="104" alt="MEMORA">
+</p>
+
 # MEMORA
 
 **Memory, Back to Its Nature.**
