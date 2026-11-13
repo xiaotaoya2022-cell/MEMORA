@@ -10,9 +10,10 @@ const (
 	// systemMemoryListInformation is SystemMemoryListInformation from the
 	// SYSTEM_INFORMATION_CLASS enum. It is not in the public SDK.
 	systemMemoryListInformation = 0x50
-	// memoryPurgeStandbyList is the command accepted by
-	// NtSetSystemInformation for the class above.
-	memoryPurgeStandbyList = 4
+	// Commands accepted by NtSetSystemInformation for SystemMemoryListInformation.
+	memoryFlushModifiedList           = 3
+	memoryPurgeStandbyList            = 4
+	memoryPurgeLowPriorityStandbyList = 5
 
 	// pageListEntries is how many SIZE_T we read back. The structure has
 	// grown over Windows versions; the first 22 fields are stable enough
@@ -248,10 +249,26 @@ func readPages() (Pages, bool) {
 // This is the one action that measurably lowers "in use" without touching
 // any process, and it costs file cache, so callers must gate it hard.
 func PurgeStandby() error {
+	return runMemoryListCommand(memoryPurgeStandbyList)
+}
+
+// PurgeLowPriorityStandby drops only priority-0 standby pages, preserving
+// hotter file cache pages compared to PurgeStandby.
+func PurgeLowPriorityStandby() error {
+	return runMemoryListCommand(memoryPurgeLowPriorityStandbyList)
+}
+
+// FlushModified asks the memory manager to write dirty modified pages back
+// to disk and transition them to standby/free without discarding file cache.
+func FlushModified() error {
+	return runMemoryListCommand(memoryFlushModifiedList)
+}
+
+func runMemoryListCommand(cmd uint32) error {
 	if err := EnablePrivilege("SeProfileSingleProcessPrivilege"); err != nil {
 		return fmt.Errorf("enable SeProfileSingleProcessPrivilege: %w", err)
 	}
-	command := uint32(memoryPurgeStandbyList)
+	command := cmd
 	status, _, _ := procNtSetSystemInformation.Call(
 		uintptr(systemMemoryListInformation),
 		uintptr(unsafe.Pointer(&command)),

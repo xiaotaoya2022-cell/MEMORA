@@ -13,10 +13,10 @@
 
 ## 保护名单
 
-内置保护：System、Registry、Memory Compression、Secure System、smss、csrss、
-wininit、winlogon、services、lsass、svchost、dwm、explorer、audiodg、MsMpEng、
-SecurityHealthService、NisSrv，以及 MEMORA 自己。名单在 `config.json` 的
-`protected_processes` 里可增删，但删除关键项由用户承担后果。
+内置保护：System、Registry、Memory Compression、Secure System、vmmem / vmmemWSL /
+vmcompute / vmwp、smss、csrss、wininit、winlogon、services、lsass、svchost、dwm、
+explorer、audiodg、MsMpEng、SecurityHealthService、NisSrv，以及 MEMORA 自己。
+名单在 `config.json` 的 `protected_processes` 里可增删，但删除关键项由用户承担后果。
 
 ## 五道闸门
 

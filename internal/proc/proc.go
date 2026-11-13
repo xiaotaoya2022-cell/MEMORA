@@ -12,16 +12,21 @@ const (
 	processQueryInformation        = 0x0400
 	processVMRead                  = 0x0010
 	processSetQuota                = 0x0100
+
+	systemProcessInformation = 5
+	statusInfoLengthMismatch = 0xC0000004
 )
 
 var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	psapi    = syscall.NewLazyDLL("psapi.dll")
 	user32   = syscall.NewLazyDLL("user32.dll")
+	ntdll    = syscall.NewLazyDLL("ntdll.dll")
 
 	procEnumProcesses             = psapi.NewProc("EnumProcesses")
 	procGetProcessMemoryInfo      = psapi.NewProc("GetProcessMemoryInfo")
 	procEmptyWorkingSet           = psapi.NewProc("EmptyWorkingSet")
+	procNtQuerySystemInformation  = ntdll.NewProc("NtQuerySystemInformation")
 	procOpenProcess               = kernel32.NewProc("OpenProcess")
 	procQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
 	procGetProcessTimes           = kernel32.NewProc("GetProcessTimes")
@@ -30,6 +35,44 @@ var (
 	procGetWindowThreadProcessID  = user32.NewProc("GetWindowThreadProcessId")
 	procCloseHandle               = kernel32.NewProc("CloseHandle")
 )
+
+type unicodeString struct {
+	Length        uint16
+	MaximumLength uint16
+	Buffer        uintptr
+}
+
+// systemProcessInfo mirrors SYSTEM_PROCESS_INFORMATION up through PrivatePageCount.
+type systemProcessInfo struct {
+	NextEntryOffset              uint32
+	NumberOfThreads              uint32
+	WorkingSetPrivateSize        int64
+	HardFaultCount               uint32
+	NumberOfThreadsHighWatermark uint32
+	CycleTime                    uint64
+	CreateTime                   int64
+	UserTime                     int64
+	KernelTime                   int64
+	ImageName                    unicodeString
+	BasePriority                 int32
+	UniqueProcessId              uintptr
+	InheritedFromUniqueProcessId uintptr
+	HandleCount                  uint32
+	SessionId                    uint32
+	UniqueProcessKey             uintptr
+	PeakVirtualSize              uintptr
+	VirtualSize                  uintptr
+	PageFaultCount               uint32
+	PeakWorkingSetSize           uintptr
+	WorkingSetSize               uintptr
+	QuotaPeakPagedPoolUsage      uintptr
+	QuotaPagedPoolUsage          uintptr
+	QuotaPeakNonPagedPoolUsage   uintptr
+	QuotaNonPagedPoolUsage       uintptr
+	PagefileUsage                uintptr
+	PeakPagefileUsage            uintptr
+	PrivatePageCount             uintptr
+}
 
 // processMemoryCountersEx mirrors PROCESS_MEMORY_COUNTERS_EX.
 type processMemoryCountersEx struct {
@@ -47,20 +90,126 @@ type processMemoryCountersEx struct {
 }
 
 // Info is one process reading. WorkingSet counts shared pages once per
-// process, so summing it over all processes over-counts system-wide.
+// process, so summing it over all processes over-counts system-wide;
+// PrivateWS and Private avoid cross-process double counting.
 type Info struct {
 	PID        uint32
+	ParentPID  uint32
+	SessionID  uint32
 	Name       string
 	WorkingSet uint64
+	PrivateWS  uint64
 	Private    uint64 // committed private bytes, does not double count
 	Handles    uint32
+	Threads    uint32
 	CPUSeconds float64
 }
 
-// List returns every process the current user can open. Processes that
-// cannot be opened are skipped silently; that is a fact of life for an
-// unelevated tool and should be visible in the total, not raised as errors.
+// List returns all readable processes.
 func List() ([]Info, error) {
+	procs, _, err := ListAll()
+	return procs, err
+}
+
+// ListAll enumerates processes using NtQuerySystemInformation(SystemProcessInformation)
+// first, which reads every active process without opening per-process handles
+// (eliminating privilege blind spots for services, WSL, and protected apps).
+// Falls back to EnumProcesses + OpenProcess only if the kernel query fails.
+func ListAll() ([]Info, bool, error) {
+	if procs, err := listViaSystemInfo(); err == nil {
+		return procs, true, nil
+	}
+	procs, err := listViaEnumProcesses()
+	return procs, false, err
+}
+
+func listViaSystemInfo() ([]Info, error) {
+	size := 1 << 20 // 1 MiB initial buffer
+	for attempt := 0; attempt < 8; attempt++ {
+		buf := make([]byte, size)
+		var ret uint32
+		status, _, _ := procNtQuerySystemInformation.Call(
+			uintptr(systemProcessInformation),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(len(buf)),
+			uintptr(unsafe.Pointer(&ret)),
+		)
+		if uint32(int32(status)) == statusInfoLengthMismatch {
+			if int(ret) > size {
+				size = int(ret) + (128 << 10)
+			} else {
+				size *= 2
+			}
+			continue
+		}
+		if int32(status) < 0 {
+			return nil, fmt.Errorf("NtQuerySystemInformation(SystemProcessInformation): NTSTATUS 0x%08X", uint32(int32(status)))
+		}
+		return parseSystemProcesses(buf), nil
+	}
+	return nil, fmt.Errorf("NtQuerySystemInformation(SystemProcessInformation): buffer exhausted")
+}
+
+func parseSystemProcesses(buf []byte) []Info {
+	out := make([]Info, 0, 256)
+	if len(buf) == 0 {
+		return out
+	}
+	base := uintptr(unsafe.Pointer(&buf[0]))
+	off := 0
+	minSize := int(unsafe.Sizeof(systemProcessInfo{}))
+	for off+minSize <= len(buf) {
+		entry := (*systemProcessInfo)(unsafe.Pointer(&buf[off]))
+		pid := uint32(entry.UniqueProcessId)
+		if pid != 0 {
+			name := readUnicodeString(entry.ImageName, base, buf)
+			if name == "" && pid == 4 {
+				name = "System"
+			}
+			var privWS uint64
+			if entry.WorkingSetPrivateSize > 0 {
+				privWS = uint64(entry.WorkingSetPrivateSize)
+			}
+			out = append(out, Info{
+				PID:        pid,
+				ParentPID:  uint32(entry.InheritedFromUniqueProcessId),
+				SessionID:  entry.SessionId,
+				Name:       name,
+				WorkingSet: uint64(entry.WorkingSetSize),
+				PrivateWS:  privWS,
+				Private:    uint64(entry.PrivatePageCount),
+				Handles:    entry.HandleCount,
+				Threads:    entry.NumberOfThreads,
+				CPUSeconds: float64(entry.KernelTime+entry.UserTime) / 1e7,
+			})
+		}
+		if entry.NextEntryOffset == 0 {
+			break
+		}
+		off += int(entry.NextEntryOffset)
+	}
+	return out
+}
+
+func readUnicodeString(us unicodeString, base uintptr, buf []byte) string {
+	if us.Length == 0 || us.Buffer < base {
+		return ""
+	}
+	rel := int(us.Buffer - base)
+	byteLen := int(us.Length)
+	if rel < 0 || byteLen < 2 || rel+byteLen > len(buf) {
+		return ""
+	}
+	n := byteLen / 2
+	u16 := make([]uint16, n)
+	for i := 0; i < n; i++ {
+		off := rel + i*2
+		u16[i] = uint16(buf[off]) | uint16(buf[off+1])<<8
+	}
+	return syscall.UTF16ToString(u16)
+}
+
+func listViaEnumProcesses() ([]Info, error) {
 	pids := make([]uint32, 2048)
 	for {
 		var needed uint32
@@ -170,6 +319,16 @@ func imageName(handle syscall.Handle) string {
 		}
 	}
 	return name
+}
+
+// Find returns the process entry for pid if present in procs.
+func Find(procs []Info, pid uint32) (Info, bool) {
+	for _, p := range procs {
+		if p.PID == pid {
+			return p, true
+		}
+	}
+	return Info{}, false
 }
 
 // ForegroundPID returns the process that owns the foreground window, or 0.

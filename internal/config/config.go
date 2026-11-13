@@ -62,6 +62,7 @@ func Default() Config {
 		},
 		Protected: []string{
 			"system", "registry", "memory compression", "secure system",
+			"vmmem", "vmmem.exe", "vmmemwsl", "vmmemwsl.exe", "vmcompute.exe", "vmwp.exe",
 			"smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
 			"services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
 			"explorer.exe", "audiodg.exe", "msmpeng.exe", "securityhealthservice.exe",

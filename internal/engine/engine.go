@@ -21,11 +21,13 @@ import (
 
 // Sample is one reading: system state plus process totals.
 type Sample struct {
-	At      time.Time
-	Snap    winmem.Snapshot
-	Procs   []proc.Info
-	WS      uint64
-	Private uint64
+	At        time.Time
+	Snap      winmem.Snapshot
+	Procs     []proc.Info
+	Complete  bool // true when all processes were read via SystemProcessInformation
+	WS        uint64
+	PrivateWS uint64
+	Private   uint64
 }
 
 // Grower is a process that grew the most inside the current window.
@@ -37,20 +39,22 @@ type Grower struct {
 
 // Assessment is the current reading plus the trend behind it.
 type Assessment struct {
-	At            time.Time
-	Snap          winmem.Snapshot
-	AvailPct      float64
-	WS            uint64
-	Private       uint64
-	ProcessCount  int
-	Residual      int64   // commit not owned by processes or the pools
-	InUseSlope    float64 // MB per hour
-	CommitSlope   float64
-	StandbySlope  float64
-	WindowMinutes float64
-	Kind          string // none | commit | workset | standby
-	Severity      int    // 0 quiet, 1 watching, 2 pressure, 3 critical
-	TopGrowers    []Grower
+	At              time.Time
+	Snap            winmem.Snapshot
+	AvailPct        float64
+	WS              uint64
+	PrivateWS       uint64
+	Private         uint64
+	ProcessCount    int
+	ProcessComplete bool
+	Residual        int64   // commit not owned by processes or the pools
+	InUseSlope      float64 // MB per hour
+	CommitSlope     float64
+	StandbySlope    float64
+	WindowMinutes   float64
+	Kind            string // none | commit | workset | standby
+	Severity        int    // 0 quiet, 1 watching, 2 pressure, 3 critical
+	TopGrowers      []Grower
 }
 
 // Plan is what the policy decided to do, and why.
@@ -180,10 +184,8 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 			}
 		}
 		if plan, ok := e.plan(a, candidates); ok {
-			e.execute(plan, a)
-			// Re-sample after the action so the reported state is real.
-			if s2, err2 := e.collect(opts); err2 == nil {
-				a = e.assess(s2)
+			if after, ok := e.execute(opts, plan, a); ok {
+				a = after
 			}
 		}
 	}
@@ -202,14 +204,23 @@ func (e *Engine) collect(opts Options) (Sample, error) {
 	if err != nil {
 		return Sample{}, err
 	}
-	procs, _ := proc.List()
+	procs, complete, _ := proc.ListAll()
 
-	var ws, private uint64
+	var ws, privWS, private uint64
 	for _, p := range procs {
 		ws += p.WorkingSet
+		privWS += p.PrivateWS
 		private += p.Private
 	}
-	s := Sample{At: time.Now(), Snap: snap, Procs: procs, WS: ws, Private: private}
+	s := Sample{
+		At:        time.Now(),
+		Snap:      snap,
+		Procs:     procs,
+		Complete:  complete,
+		WS:        ws,
+		PrivateWS: privWS,
+		Private:   private,
+	}
 
 	// Roll the baseline window so per-process growth stays meaningful.
 	if e.baselineAt.IsZero() ||
@@ -273,12 +284,14 @@ func (e *Engine) trackIdle(procs []proc.Info, now time.Time) {
 
 func (e *Engine) assess(s Sample) Assessment {
 	a := Assessment{
-		At:           s.At,
-		Snap:         s.Snap,
-		WS:           s.WS,
-		Private:      s.Private,
-		ProcessCount: len(s.Procs),
-		Residual:     commitResidual(s.Snap, s.Private),
+		At:              s.At,
+		Snap:            s.Snap,
+		WS:              s.WS,
+		PrivateWS:       s.PrivateWS,
+		Private:         s.Private,
+		ProcessCount:    len(s.Procs),
+		ProcessComplete: s.Complete,
+		Residual:        commitResidual(s.Snap, s.Private),
 	}
 
 	window := e.cfg.Thresholds.GrowthWindowMinutes
@@ -381,6 +394,7 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 	var plan Plan
 
 	if e.cfg.Actions.TrimIdleWorkingSets {
+		candidates := make([]proc.Info, 0, len(procs))
 		for _, p := range procs {
 			if p.PID == foreground || p.PID == self {
 				continue
@@ -399,11 +413,18 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 				a.At.Sub(last) < time.Duration(t.CooldownMinutes)*time.Minute {
 				continue
 			}
-			plan.Trim = append(plan.Trim, p)
-			if len(plan.Trim) >= 3 {
-				break
-			}
+			candidates = append(candidates, p)
 		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].WorkingSet != candidates[j].WorkingSet {
+				return candidates[i].WorkingSet > candidates[j].WorkingSet
+			}
+			return e.idleSince[candidates[i].PID].Before(e.idleSince[candidates[j].PID])
+		})
+		if len(candidates) > 3 {
+			candidates = candidates[:3]
+		}
+		plan.Trim = candidates
 		if len(plan.Trim) > 0 {
 			plan.Reason = fmt.Sprintf("可用内存 %.1f%% 低于阈值 %.1f%%，回收空闲进程工作集",
 				a.AvailPct, t.AvailableLowPercent)
@@ -426,7 +447,7 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 	return plan, true
 }
 
-func (e *Engine) execute(plan Plan, before Assessment) {
+func (e *Engine) execute(opts Options, plan Plan, before Assessment) (Assessment, bool) {
 	b := statsOf(before)
 	action := "trim_idle_working_sets"
 	if plan.Purge && len(plan.Trim) > 0 {
@@ -470,12 +491,12 @@ func (e *Engine) execute(plan Plan, before Assessment) {
 
 	// Let the memory manager settle before measuring the result.
 	time.Sleep(3 * time.Second)
-	s, err := e.collect(Options{})
+	s, err := e.collect(opts)
 	if err != nil {
 		entry.Result = "unverified"
 		entry.Detail = err.Error()
 		e.record(entry)
-		return
+		return Assessment{}, false
 	}
 	after := e.assess(s)
 	af := statsOf(after)
@@ -495,6 +516,7 @@ func (e *Engine) execute(plan Plan, before Assessment) {
 		entry.Result = "ok"
 	}
 	e.record(entry)
+	return after, true
 }
 
 func (e *Engine) isProtected(name string) bool {

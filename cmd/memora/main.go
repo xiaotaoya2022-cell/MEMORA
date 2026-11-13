@@ -58,13 +58,16 @@ func usage() {
 	fmt.Print(`MEMORA — Memory, Back to Its Nature.
 
 用法:
-  memora status [--json]        看一次当前状态
-  memora watch  [--quiet]       常驻监视（--hidden 不显示控制台）
-  memora doctor [--minutes N]   观察一段时间并给出归因结论
-  memora trace  [--minutes N] [--out FILE]
-                                把采样写成 JSONL
-  memora journal [--lines N]    查看行为日志
-  memora config [--reset]       查看/重置配置
+  memora status [--json] [--deep]    看一次当前状态（--deep 匹配驱动内核池标签）
+  memora watch  [--observe] [--quiet] [--hidden] [--interval D] [--only-pid PID]
+                                     常驻监视；--observe 只记录不动手
+  memora doctor [--minutes N] [--interval D]
+                                     观察一段时间并给出归因结论
+  memora trace  [--minutes N] [--interval D] [--out FILE]
+                                     把采样写成 JSONL
+  memora journal [--lines N] [--path]
+                                     查看行为日志
+  memora config [--reset]            查看/重置配置
   memora startup enable|disable|status
   memora version
 
@@ -79,22 +82,30 @@ func usage() {
 func cmdStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	deep := fs.Bool("deep", false, "扫描已加载驱动以匹配异常内核池标签")
 	_ = fs.Parse(args)
 
 	snap, err := winmem.Collect()
 	if err != nil {
 		fail("读取内存状态失败: %v", err)
 	}
-	procs, _ := proc.List()
+	procs, complete, _ := proc.ListAll()
 
-	var ws, private uint64
+	var ws, privWS, private uint64
 	for _, p := range procs {
 		ws += p.WorkingSet
+		privWS += p.PrivateWS
 		private += p.Private
 	}
 	residual := int64(snap.Commit) - int64(private) - int64(snap.KernelPaged) - int64(snap.KernelNonpaged)
+	selfWS, selfHandles := selfStats(procs)
+	diag := engine.InspectDeep(snap, procs, *deep)
 
 	if *asJSON {
+		groupLimit := 15
+		if len(diag.ProcGroups) < groupLimit {
+			groupLimit = len(diag.ProcGroups)
+		}
 		out := map[string]any{
 			"time":                      time.Now().Format(time.RFC3339),
 			"total_bytes":               snap.TotalPhys,
@@ -109,11 +120,19 @@ func cmdStatus(args []string) {
 			"modified_bytes":            snap.Pages.Modified,
 			"free_bytes":                snap.Pages.Free,
 			"processes":                 len(procs),
+			"process_complete":          complete,
 			"working_set_bytes":         ws,
+			"private_working_set_bytes": privWS,
 			"private_bytes":             private,
 			"unattributed_commit_bytes": residual,
+			"vid_bytes":                 diag.Extras.VidBytes,
+			"numa_nodes":                diag.Extras.NUMANodes,
+			"kernel_leak":               diag.Leak,
+			"top_nonpaged_tags":         diag.TopNonPagedTags,
+			"top_paged_tags":            diag.TopPagedTags,
+			"top_process_groups":        diag.ProcGroups[:groupLimit],
 			"memora_pid":                os.Getpid(),
-			"memora_working_set":        selfWorkingSet(),
+			"memora_working_set":        selfWS,
 		}
 		data, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(data))
@@ -133,15 +152,36 @@ func cmdStatus(args []string) {
 	} else {
 		fmt.Printf("页状态     当前系统不支持读取页链，待机缓存不可见\n")
 	}
+	if diag.Extras.HasVid && diag.Extras.VidBytes > 0 {
+		fmt.Printf("虚机锁页   %s（Hyper-V / WSL2 Vid 分区物理占用，不计入进程工作集）\n",
+			human(diag.Extras.VidBytes))
+	}
+	if diag.Extras.HasNUMA && len(diag.Extras.NUMANodes) > 1 {
+		parts := make([]string, 0, len(diag.Extras.NUMANodes))
+		for _, n := range diag.Extras.NUMANodes {
+			parts = append(parts, fmt.Sprintf("Node%s 可用 %d/%d MB", n.ID, n.AvailableMB, n.TotalMB))
+		}
+		fmt.Printf("NUMA 节点  %s\n", strings.Join(parts, "   "))
+		if tight, ok := engine.NUMADisparity(diag.Extras.NUMANodes); ok {
+			fmt.Printf("           注意: Node%s 可用仅剩 %d MB（%d MB 总量），存在局部内存挤兑\n",
+				tight.ID, tight.AvailableMB, tight.TotalMB)
+		}
+	}
+
 	inaccessible := int(snap.Processes) - len(procs)
 	if inaccessible < 0 {
 		inaccessible = 0
 	}
-	fmt.Printf("进程       %d 个   工作集合计 %s   私有提交合计 %s\n",
-		len(procs), human(ws), human(private))
-	if inaccessible > 0 {
-		fmt.Printf("           系统报告 %d 个进程，其中 %d 个无权限读取，未计入上面的合计\n",
-			snap.Processes, inaccessible)
+	if complete {
+		fmt.Printf("进程       %d 个（完整读取）   工作集合计 %s（独占 %s）   私有提交合计 %s\n",
+			len(procs), human(ws), human(privWS), human(private))
+	} else {
+		fmt.Printf("进程       %d 个   工作集合计 %s   私有提交合计 %s\n",
+			len(procs), human(ws), human(private))
+		if inaccessible > 0 {
+			fmt.Printf("           系统报告 %d 个进程，其中 %d 个无权限读取，未计入上面的合计\n",
+				snap.Processes, inaccessible)
+		}
 	}
 
 	label := "正常"
@@ -149,19 +189,113 @@ func cmdStatus(args []string) {
 		label = "上限估计"
 	}
 	fmt.Printf("\n未归因提交 %s（%s）\n", humanU(residual), label)
-	fmt.Printf("  这部分提交不属于已读取进程的私有内存，也不属于内核池。\n")
-	fmt.Printf("  无权限进程与跨会话分配都在其中，所以它是上限，不是确数。\n\n")
+	if complete {
+		fmt.Printf("  已覆盖全部活跃进程私有提交与内核池，剩余部分主要为共享区段(Section)、会话空间或系统/虚机提交。\n")
+	} else {
+		fmt.Printf("  这部分提交不属于已读取进程的私有内存，也不属于内核池（含无权限进程与跨会话分配）。\n")
+	}
 
-	fmt.Printf("%-6s %10s %10s  %s\n", "PID", "工作集", "私有提交", "进程")
-	sort.Slice(procs, func(i, j int) bool { return procs[i].WorkingSet > procs[j].WorkingSet })
-	limit := 10
-	for i, p := range procs {
-		if i >= limit {
+	printKernelStatus(diag, *deep)
+
+	fmt.Printf("\n进程套件排行（按私有提交聚合）\n")
+	fmt.Printf("%-26s %4s %10s %10s %10s %7s\n", "应用", "进程数", "工作集", "独占工作集", "私有提交", "句柄")
+	for i, g := range diag.ProcGroups {
+		if i >= 10 {
 			break
 		}
-		fmt.Printf("%-6d %10s %10s  %s\n", p.PID, human(p.WorkingSet), human(p.Private), p.Name)
+		fmt.Printf("%-26s %4d %10s %10s %10s %7d\n",
+			truncateName(g.Name, 26), g.Count, human(g.WorkingSet), human(g.PrivateWS), human(g.Private), g.Handles)
 	}
-	fmt.Printf("\nMEMORA 自身 %s / %d 个句柄\n", human(selfWorkingSet()), selfHandles())
+
+	fmt.Printf("\n单进程工作集 Top 8\n")
+	fmt.Printf("%-6s %10s %10s %10s  %s\n", "PID", "工作集", "独占工作集", "私有提交", "进程")
+	sort.Slice(procs, func(i, j int) bool { return procs[i].WorkingSet > procs[j].WorkingSet })
+	for i, p := range procs {
+		if i >= 8 {
+			break
+		}
+		fmt.Printf("%-6d %10s %10s %10s  %s\n", p.PID, human(p.WorkingSet), human(p.PrivateWS), human(p.Private), p.Name)
+	}
+	fmt.Printf("\nMEMORA 自身 %s / %d 个句柄\n", human(selfWS), selfHandles)
+}
+
+func printKernelStatus(diag engine.DeepDiagnosis, deep bool) {
+	if !diag.HasObjectTypes && !diag.HasPoolTags {
+		return
+	}
+	fmt.Println()
+	if diag.Leak.Suspected {
+		fmt.Printf("内核异常   检测到疑似僵尸进程对象泄漏（内核驱动未释放对象引用）\n")
+		fmt.Printf("           Process 对象 %d 个（当前运行 %d 个，打开句柄仅 %d 个），Token %d 个",
+			diag.Leak.ProcessObjects, diag.Leak.ActiveProcesses, diag.Leak.ProcessHandles, diag.Leak.TokenObjects)
+		if diag.Leak.JobObjects > 0 {
+			fmt.Printf("，Job %d 个（句柄 %d）", diag.Leak.JobObjects, diag.Leak.JobHandles)
+		}
+		fmt.Println()
+		if diag.Leak.ProcTagAllocs > 0 {
+			fmt.Printf("           Proc 池分配 %d 次仅释放 %d 次，相关内核残骸合计 %s\n",
+				diag.Leak.ProcTagAllocs, diag.Leak.ProcTagFrees, human(diag.Leak.RelatedPoolByte))
+		}
+	} else if diag.HasObjectTypes {
+		fmt.Printf("内核对象   Process %d（句柄 %d）  Token %d（句柄 %d）\n",
+			diag.Leak.ProcessObjects, diag.Leak.ProcessHandles, diag.Leak.TokenObjects, diag.Leak.TokenHandles)
+	}
+
+	if len(diag.TopNonPagedTags) > 0 {
+		fmt.Printf("非分页池大户\n")
+		needDeepHint := false
+		for i, t := range diag.TopNonPagedTags {
+			if i >= 6 {
+				break
+			}
+			note := formatTagNote(t)
+			if !deep && t.Desc == "" && (t.Bytes >= 64<<20 || (t.Allocs > 100 && t.Frees == 0 && t.Bytes >= 16<<20)) {
+				needDeepHint = true
+			}
+			fmt.Printf("  %-4s  %9s  活跃 %-8d  (分配 %d / 释放 %d)%s\n",
+				t.Tag, human(t.Bytes), t.Active, t.Allocs, t.Frees, note)
+		}
+		if needDeepHint {
+			fmt.Printf("  提示: 加上 --deep 可扫描已加载驱动，匹配未知 Pool Tag 对应的 .sys 文件。\n")
+		}
+	}
+	if deep && len(diag.TopPagedTags) > 0 {
+		fmt.Printf("分页池大户\n")
+		for i, t := range diag.TopPagedTags {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("  %-4s  %9s  活跃 %-8d  (分配 %d / 释放 %d)%s\n",
+				t.Tag, human(t.Bytes), t.Active, t.Allocs, t.Frees, formatTagNote(t))
+		}
+	}
+}
+
+func formatTagNote(t engine.PoolFinding) string {
+	var parts []string
+	if t.Desc != "" {
+		parts = append(parts, t.Desc)
+	}
+	if len(t.Drivers) > 0 {
+		parts = append(parts, "疑似驱动: "+strings.Join(t.Drivers, ", "))
+	}
+	if t.Allocs >= 8 && t.Frees == 0 {
+		parts = append(parts, "0释放")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  [" + strings.Join(parts, "; ") + "]"
+}
+
+func truncateName(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 // ---------- watch ----------
@@ -240,9 +374,13 @@ func cmdDoctor(args []string) {
 
 	eng := engine.New(cfg, nil)
 	var first, last engine.Sample
-	firstWS := map[uint32]uint64{}
-	lastWS := map[uint32]uint64{}
+	var firstDeep engine.DeepDiagnosis
+	firstPriv := map[uint32]uint64{}
+	lastPriv := map[uint32]uint64{}
 	names := map[uint32]string{}
+	seenPIDs := map[uint32]struct{}{}
+	spawnByParent := map[string]int{}
+	selfPID := uint32(os.Getpid())
 	count := 0
 
 	opts := engine.Options{
@@ -251,29 +389,46 @@ func cmdDoctor(args []string) {
 		OnReading: func(s engine.Sample) {
 			if count == 0 {
 				first = s
+				firstDeep = engine.InspectDeep(s.Snap, s.Procs, false)
 				for _, p := range s.Procs {
-					firstWS[p.PID] = p.WorkingSet
+					firstPriv[p.PID] = p.Private
 					names[p.PID] = p.Name
+					seenPIDs[p.PID] = struct{}{}
+				}
+			} else {
+				for _, p := range s.Procs {
+					names[p.PID] = p.Name
+					if _, ok := seenPIDs[p.PID]; !ok {
+						seenPIDs[p.PID] = struct{}{}
+						if p.PID != selfPID && p.ParentPID != selfPID {
+							parent := names[p.ParentPID]
+							if parent == "" {
+								parent = fmt.Sprintf("PID:%d", p.ParentPID)
+							}
+							spawnByParent[parent]++
+						}
+					}
 				}
 			}
 			last = s
-			lastWS = map[uint32]uint64{}
+			lastPriv = map[uint32]uint64{}
 			for _, p := range s.Procs {
-				lastWS[p.PID] = p.WorkingSet
-				names[p.PID] = p.Name
+				lastPriv[p.PID] = p.Private
 			}
 			count++
 			fmt.Printf("\r观察中 %d 个样本  可用 %.1f%%", count, s.Snap.AvailablePercent())
 		},
 	}
 
-	fmt.Printf("MEMORA doctor  观察 %.0f 分钟，间隔 %s\n\n", *minutes, *interval)
+	fmt.Printf("MEMORA doctor  观察 %.1f 分钟，间隔 %s\n\n", *minutes, *interval)
 	_ = eng.Run(ctx, opts)
 	fmt.Println()
 
 	if count < 2 {
 		fail("样本不足，观察时间太短")
 	}
+
+	lastDeep := engine.InspectDeep(last.Snap, last.Procs, true)
 
 	dInUse := float64(last.Snap.InUse())/(1<<20) - float64(first.Snap.InUse())/(1<<20)
 	dCommit := float64(last.Snap.Commit)/(1<<20) - float64(first.Snap.Commit)/(1<<20)
@@ -305,26 +460,83 @@ func cmdDoctor(args []string) {
 	row("待机缓存", float64(first.Snap.Pages.Standby)/(1<<20), float64(last.Snap.Pages.Standby)/(1<<20))
 	row("进程私有提交", float64(first.Private)/(1<<20), float64(last.Private)/(1<<20))
 	row("未归因提交", float64(residFirst)/(1<<20), float64(residLast)/(1<<20))
+	if firstDeep.Extras.HasVid || lastDeep.Extras.HasVid {
+		row("虚机锁页(Vid)", float64(firstDeep.Extras.VidBytes)/(1<<20), float64(lastDeep.Extras.VidBytes)/(1<<20))
+	}
 
-	fmt.Printf("\n增长最快的进程\n")
+	printDoctorSpawns(firstDeep, lastDeep, spawnByParent, elapsedMin)
+	printDoctorGrowers(firstPriv, lastPriv, names, firstDeep.ProcGroups, lastDeep.ProcGroups)
+	printDoctorPools(firstDeep, lastDeep)
+
+	fmt.Printf("\n结论\n")
+	fmt.Print(conclusion(dInUse, dCommit, dResid, dPrivate, dWS, dStandby, dPaged, dNon, lastDeep))
+	if extra := notes(last, lastDeep); extra != "" {
+		fmt.Printf("\n值得单独看一眼\n")
+		fmt.Print(extra)
+	}
+	fmt.Printf("\n观察 %d 个样本，%.1f 分钟。以上为真实读数，不是估算。\n", count, elapsedMin)
+}
+
+func printDoctorSpawns(first, last engine.DeepDiagnosis, spawnByParent map[string]int, elapsedMin float64) {
+	if !first.HasPoolTags && !last.HasObjectTypes {
+		return
+	}
+	dAllocs := int64(last.Leak.ProcTagAllocs) - int64(first.Leak.ProcTagAllocs)
+	dFrees := int64(last.Leak.ProcTagFrees) - int64(first.Leak.ProcTagFrees)
+	dObjs := int64(last.Leak.ProcessObjects) - int64(first.Leak.ProcessObjects)
+	if !last.Leak.Suspected && dAllocs <= 5 && dObjs <= 5 {
+		return
+	}
+	fmt.Printf("\n进程创建与内核对象回收\n")
+	if last.HasPoolTags {
+		rate := 0.0
+		if elapsedMin > 0 {
+			rate = float64(dAllocs) / elapsedMin
+		}
+		fmt.Printf("  观察期内创建进程 %d 次（约 %.1f 个/分），Proc 释放 %d 次，Process 对象净增 %+d 个。\n",
+			dAllocs, rate, dFrees, dObjs)
+	}
+	if len(spawnByParent) > 0 {
+		type pSpawn struct {
+			name  string
+			count int
+		}
+		var list []pSpawn
+		for k, v := range spawnByParent {
+			list = append(list, pSpawn{name: k, count: v})
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].count > list[j].count })
+		var top []string
+		for i, item := range list {
+			if i >= 5 {
+				break
+			}
+			top = append(top, fmt.Sprintf("%s (+%d)", item.name, item.count))
+		}
+		fmt.Printf("  采样捕获频繁拉起子进程的宿主: %s\n", strings.Join(top, "、"))
+	}
+}
+
+func printDoctorGrowers(firstPriv, lastPriv map[uint32]uint64, names map[uint32]string, firstGroups, lastGroups []engine.ProcGroup) {
+	fmt.Printf("\n私有提交增长最快的进程\n")
 	type grow struct {
 		pid   uint32
 		name  string
 		delta int64
 	}
 	var growers []grow
-	for pid, ws := range lastWS {
-		base, ok := firstWS[pid]
+	for pid, priv := range lastPriv {
+		base, ok := firstPriv[pid]
 		if !ok {
 			continue
 		}
-		if d := int64(ws) - int64(base); d > 32<<20 {
+		if d := int64(priv) - int64(base); d > 16<<20 {
 			growers = append(growers, grow{pid: pid, name: names[pid], delta: d})
 		}
 	}
 	sort.Slice(growers, func(i, j int) bool { return growers[i].delta > growers[j].delta })
 	if len(growers) == 0 {
-		fmt.Printf("  没有进程在观察期内增长超过 32 MB。\n")
+		fmt.Printf("  没有单进程私有提交在观察期内增长超过 16 MB。\n")
 	} else {
 		for i, g := range growers {
 			if i >= 5 {
@@ -334,24 +546,115 @@ func cmdDoctor(args []string) {
 		}
 	}
 
-	fmt.Printf("\n结论\n")
-	fmt.Print(conclusion(dInUse, dCommit, dResid, dPrivate, dWS, dStandby, dPaged, dNon))
-	if extra := notes(last); extra != "" {
-		fmt.Printf("\n值得单独看一眼\n")
-		fmt.Print(extra)
+	firstMap := make(map[string]uint64, len(firstGroups))
+	for _, g := range firstGroups {
+		firstMap[strings.ToLower(g.Name)] = g.Private
 	}
-	fmt.Printf("\n观察 %d 个样本，%.1f 分钟。以上为真实读数，不是估算。\n", count, elapsedMin)
+	var groupGrowers []grow
+	for _, g := range lastGroups {
+		base, ok := firstMap[strings.ToLower(g.Name)]
+		if !ok {
+			continue
+		}
+		if d := int64(g.Private) - int64(base); d > 16<<20 {
+			groupGrowers = append(groupGrowers, grow{name: g.Name, delta: d})
+		}
+	}
+	sort.Slice(groupGrowers, func(i, j int) bool { return groupGrowers[i].delta > groupGrowers[j].delta })
+	if len(groupGrowers) > 0 {
+		fmt.Printf("按套件聚合增长（含新建子进程）\n")
+		for i, g := range groupGrowers {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("  %-28s %+8s\n", g.name, humanU(g.delta))
+		}
+	}
 }
 
-func conclusion(dInUse, dCommit, dResid, dPrivate, dWS, dStandby, dPaged, dNon float64) string {
+func printDoctorPools(first, last engine.DeepDiagnosis) {
+	if !last.HasPoolTags {
+		return
+	}
+	firstMap := make(map[string]winmem.PoolTag, len(first.PoolTags))
+	for _, pt := range first.PoolTags {
+		firstMap[pt.Tag] = pt
+	}
+	type poolDelta struct {
+		tag     string
+		delta   int64
+		total   uint64
+		drivers []string
+		desc    string
+	}
+	driverMap := map[string][]string{}
+	for _, f := range last.TopNonPagedTags {
+		if len(f.Drivers) > 0 {
+			driverMap[f.Tag] = f.Drivers
+		}
+	}
+	for _, f := range last.TopPagedTags {
+		if len(f.Drivers) > 0 {
+			driverMap[f.Tag] = f.Drivers
+		}
+	}
+
+	var grown []poolDelta
+	for _, pt := range last.PoolTags {
+		prev := firstMap[pt.Tag]
+		d := int64(pt.TotalUsed()) - int64(prev.TotalUsed())
+		if d >= 4<<20 {
+			grown = append(grown, poolDelta{
+				tag:     pt.Tag,
+				delta:   d,
+				total:   pt.TotalUsed(),
+				drivers: driverMap[pt.Tag],
+				desc:    winmem.DescribePoolTag(pt.Tag),
+			})
+		}
+	}
+	sort.Slice(grown, func(i, j int) bool { return grown[i].delta > grown[j].delta })
+
+	if len(grown) > 0 || len(last.TopNonPagedTags) > 0 {
+		fmt.Printf("\n内核池与驱动归因\n")
+	}
+	for i, g := range grown {
+		if i >= 5 {
+			break
+		}
+		note := g.desc
+		if len(g.drivers) > 0 {
+			if note != "" {
+				note += "; "
+			}
+			note += "疑似驱动: " + strings.Join(g.drivers, ", ")
+		}
+		if note != "" {
+			note = "  [" + note + "]"
+		}
+		fmt.Printf("  增长 %-4s  %+8s  (当前 %s)%s\n", g.tag, humanU(g.delta), human(g.total), note)
+	}
+	for i, t := range last.TopNonPagedTags {
+		if i >= 5 || t.Bytes < 32<<20 {
+			break
+		}
+		fmt.Printf("  存量 %-4s  %9s  (分配 %d / 释放 %d)%s\n",
+			t.Tag, human(t.Bytes), t.Allocs, t.Frees, formatTagNote(t))
+	}
+}
+
+func conclusion(dInUse, dCommit, dResid, dPrivate, dWS, dStandby, dPaged, dNon float64, deep engine.DeepDiagnosis) string {
 	switch {
+	case deep.Leak.Suspected && dPaged+dNon > 8:
+		return fmt.Sprintf("  内核池仍在增长（%+.0f MB），同时内核已累积 %d 个未释放的 Process 对象。\n"+
+			"  这是内核驱动对象引用泄漏（进程退出后 EPROCESS 仍被持住），用户态无法安全强清，需排查安全/管家/虚拟化驱动。\n",
+			dPaged+dNon, deep.Leak.ProcessObjects)
 	case dCommit > 64 && dResid > 0.6*dCommit:
 		return fmt.Sprintf("  提交增长主要落在未归因部分（%+.0f MB / 总 %+.0f MB）。\n"+
-			"  这部分不在任何进程里，也不在内核池里，通常是驱动或会话级分配。\n"+
-			"  MEMORA 不会强行回收它：用户态没有安全的手段做到这一点。\n", dResid, dCommit)
+			"  当前已读取全部进程私有提交，剩余增量来自共享区段(Section)、会话或驱动/虚机分配。\n", dResid, dCommit)
 	case dCommit > 64 && dPrivate > 0.6*dCommit:
 		return fmt.Sprintf("  提交增长主要来自进程私有内存（%+.0f MB / 总 %+.0f MB）。\n"+
-			"  可从下面的进程列表定位；MEMORA 只会回收其中长期空闲的那些。\n", dPrivate, dCommit)
+			"  可从上面的进程/套件列表定位；MEMORA 只会回收其中长期空闲的工作集。\n", dPrivate, dCommit)
 	case dWS > 128:
 		return fmt.Sprintf("  进程工作集合计增长 %+.0f MB，属于活跃使用而非泄漏。\n"+
 			"  工作集包含共享页，合计会重复计算，不能直接等同于物理占用。\n", dWS)
@@ -359,30 +662,44 @@ func conclusion(dInUse, dCommit, dResid, dPrivate, dWS, dStandby, dPaged, dNon f
 		return fmt.Sprintf("  待机缓存增长 %+.0f MB。这是文件缓存，Windows 会按需回收，不是泄漏。\n", dStandby)
 	case dPaged+dNon > 64:
 		return fmt.Sprintf("  内核池增长 %+.0f MB（分页 %+.0f / 非分页 %+.0f）。\n"+
-			"  持续单调增长通常指向驱动；MEMORA 记录它，但不干预。\n", dPaged+dNon, dPaged, dNon)
+			"  持续单调增长通常指向驱动；可结合上面的 Pool Tag 与驱动匹配继续排查。\n", dPaged+dNon, dPaged, dNon)
 	case dInUse > 64:
 		return fmt.Sprintf("  物理占用增长 %+.0f MB，但提交和进程都平稳。\n"+
-			"  优先怀疑共享 section 或驱动锁定页。\n", dInUse)
+			"  优先怀疑共享 section、Hyper-V/WSL 分区或驱动锁定页。\n", dInUse)
 	default:
-		return "  观察期内没有出现有意义的增长。\n"
+		return "  观察期内系统内存整体平稳。\n"
 	}
 }
 
-func notes(s engine.Sample) string {
+func notes(s engine.Sample, deep engine.DeepDiagnosis) string {
 	var b strings.Builder
 	commit := float64(s.Snap.Commit)
 	nonpaged := float64(s.Snap.KernelNonpaged) / (1 << 30)
 	residual := int64(s.Snap.Commit) - int64(s.Private) - int64(s.Snap.KernelPaged) - int64(s.Snap.KernelNonpaged)
 	inaccessible := int(s.Snap.Processes) - len(s.Procs)
 
+	if deep.Leak.Suspected {
+		fmt.Fprintf(&b, "  存量存在内核 Process 对象泄漏（%d 个对象 vs %d 个运行进程 / %d 个句柄），相关池占用 %s；这类内核泄漏无法在用户态直接释放，必须靠更新/停用问题驱动并重启才能归零。\n",
+			deep.Leak.ProcessObjects, deep.Leak.ActiveProcesses, deep.Leak.ProcessHandles, human(deep.Leak.RelatedPoolByte))
+	}
 	if nonpaged >= 1.0 {
-		fmt.Fprintf(&b, "  非分页池 %.1f GB。桌面系统常见 0.2–0.8 GB，长期高于 1 GB 时值得查驱动或安全软件。\n", nonpaged)
+		fmt.Fprintf(&b, "  非分页池 %.1f GB。桌面系统常见 0.2–0.8 GB，长期高于 1 GB 时重点看上面标注的 Pool Tag 与对应驱动。\n", nonpaged)
+	}
+	if deep.Extras.HasVid && deep.Extras.VidBytes >= 1<<30 {
+		fmt.Fprintf(&b, "  Hyper-V / WSL2 Vid 分区锁住 %s 物理内存；如长期不用容器/WSL，可在 .wslconfig 检查 memory 与 autoMemoryReclaim/vmIdleTimeout 设置。\n",
+			human(deep.Extras.VidBytes))
+	}
+	if tight, ok := engine.NUMADisparity(deep.Extras.NUMANodes); ok {
+		fmt.Fprintf(&b, "  NUMA Node%s 可用仅剩 %d MB（%d MB 总量），局部节点已接近满载。\n",
+			tight.ID, tight.AvailableMB, tight.TotalMB)
 	}
 	if commit > 0 && residual > 0 {
 		share := float64(residual) / commit * 100
 		if share >= 50 {
 			fmt.Fprintf(&b, "  未归因提交 %.1f GB，占提交的 %.0f%%。", float64(residual)/(1<<30), share)
-			if inaccessible > 0 {
+			if s.Complete {
+				fmt.Fprintf(&b, "已完整读取全部 %d 个进程，说明差额在共享区段、虚机/驱动或跨会话提交。\n", len(s.Procs))
+			} else if inaccessible > 0 {
 				fmt.Fprintf(&b, "其中有 %d 个进程无权限读取，所以这个比例偏高。\n", inaccessible)
 			} else {
 				fmt.Fprintf(&b, "没有任何进程无权限读取，说明大头在会话或驱动侧。\n")
@@ -433,8 +750,10 @@ func cmdTrace(args []string) {
 				"kernel_nonpaged_mb": float64(s.Snap.KernelNonpaged) / (1 << 20),
 				"standby_mb":         float64(s.Snap.Pages.Standby) / (1 << 20),
 				"working_set_mb":     float64(s.WS) / (1 << 20),
+				"private_ws_mb":      float64(s.PrivateWS) / (1 << 20),
 				"private_mb":         float64(s.Private) / (1 << 20),
 				"processes":          len(s.Procs),
+				"process_complete":   s.Complete,
 			})
 			count++
 			fmt.Printf("\r已写入 %d 个样本", count)
@@ -579,29 +898,11 @@ func runReg(args ...string) error {
 
 // ---------- helpers ----------
 
-func selfWorkingSet() uint64 {
-	pid := uint32(os.Getpid())
-	for _, p := range mustProcs() {
-		if p.PID == pid {
-			return p.WorkingSet
-		}
+func selfStats(procs []proc.Info) (uint64, uint32) {
+	if p, ok := proc.Find(procs, uint32(os.Getpid())); ok {
+		return p.WorkingSet, p.Handles
 	}
-	return 0
-}
-
-func selfHandles() uint32 {
-	pid := uint32(os.Getpid())
-	for _, p := range mustProcs() {
-		if p.PID == pid {
-			return p.Handles
-		}
-	}
-	return 0
-}
-
-func mustProcs() []proc.Info {
-	ps, _ := proc.List()
-	return ps
+	return 0, 0
 }
 
 func human(v uint64) string {

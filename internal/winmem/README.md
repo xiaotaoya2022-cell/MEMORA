@@ -2,11 +2,12 @@
 
 MEMORA 的监测层：只负责如实读取 Windows 的内存状态，不做判断、不做动作。
 
-这里使用的接口分三类：
+这里使用的接口分四类：
 
-- 文档化的：`GlobalMemoryStatusEx`、`GetPerformanceInfo`
-- 半文档化的：`NtQuerySystemInformation(SystemMemoryListInformation)`
-- 需要特权的：`NtSetSystemInformation(MemoryPurgeStandbyList)`
+- 文档化的：`GlobalMemoryStatusEx`、`GetPerformanceInfo`、`pdh.dll`（Hyper-V/WSL `Vid` 与 NUMA）
+- 半文档化的：`NtQuerySystemInformation`（`SystemMemoryListInformation`、`SystemPoolTagInformation`、`SystemModuleInformation`）与 `NtQueryObject(ObjectTypesInformation)`
+- 驱动离线对照：`MatchPoolTagsToDrivers` 在按需深度诊断阶段扫描已加载 `.sys` 匹配未知 Pool Tag
+- 需要特权的：`NtSetSystemInformation`（`MemoryPurgeStandbyList` / `MemoryFlushModifiedList` / `MemoryPurgeLowPriorityStandbyList`）
 
 ## 为什么需要 page list
 
