@@ -557,6 +557,12 @@ func cmdStartup(args []string) {
 			fmt.Println("当前未设置开机启动。")
 			return
 		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if i := strings.Index(line, "REG_SZ"); i >= 0 {
+				fmt.Printf("已设置开机启动: %s\n", strings.TrimSpace(line[i+len("REG_SZ"):]))
+				return
+			}
+		}
 		fmt.Println(strings.TrimSpace(string(out)))
 	default:
 		fmt.Println("用法: memora startup enable|disable|status")
