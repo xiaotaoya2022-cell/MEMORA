@@ -1,7 +1,15 @@
+# Build artifacts
+bin/
+*.exe
+
+# Sampling output
+trace.jsonl
+*.jsonl
+
+# Editor
+.vscode/
+.idea/
+
 # Windows
 Thumbs.db
 Desktop.ini
-
-# Editors
-.vscode/
-.idea/

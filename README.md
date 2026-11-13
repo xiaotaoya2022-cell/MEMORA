@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/icon.png" width="104" alt="MEMORA">
+  <img src="assets/brand/cover.jpg" width="760" alt="MEMORA — Memory, Back to Its Nature.">
 </p>
 
 # MEMORA
@@ -67,15 +67,77 @@ MEMORA 应该像系统中一个安静工作的守护者，长期驻留，持续�
 
 **Your Memory. Your System. Naturally Efficient.**
 
+## 快速开始
+
+需要 Go 1.21 或更新版本，以及 Windows 10/11。
+
+```powershell
+.\build.ps1                        # 产出 bin\memora.exe（单文件、无运行时依赖）
+.\bin\memora.exe status            # 看一眼当前的内存形态
+.\bin\memora.exe doctor --minutes 10   # 观察一段时间，给出归因结论
+.\bin\memora.exe watch --observe   # 前台观察模式：只记录，不做任何动作
+.\bin\memora.exe watch             # 守护模式：只有确实需要时才动作
+.\bin\memora.exe startup enable    # 开机自启（写入 HKCU Run，可随时 disable）
+```
+
+`doctor` 与 `trace` 不会修改系统，可以放心跑。第一次使用建议先用 `watch --observe`
+观察一两天，确认它判断的对象和你的实际感受一致，再切到守护模式。
+
+## 命令
+
+| 命令 | 作用 |
+|---|---|
+| `status [--json]` | 物理内存、提交、内核池、页链、进程排行、自身开销 |
+| `watch [--observe\|--quiet\|--hidden]` | 常驻守护；`--observe` 只观察不动手，`--hidden` 隐藏控制台 |
+| `doctor [--minutes N]` | 采样一段时间，算斜率并给出归因结论，不做任何动作 |
+| `trace [--minutes N] [--out F]` | 把每次采样写成 JSONL，便于外部比对 |
+| `journal [--lines N]` | 读动作日志，看它到底动过什么、回收了多少 |
+| `config [--reset]` | 查看或重置配置 |
+| `startup enable\|disable\|status` | 开机自启管理 |
+| `version` | 版本号 |
+
+## 它是怎么判断的
+
+MEMORA 不看"工作集"这个数字下结论。工作集包含共享页，同一个 DLL 被多个进程映射
+就会被重复计算，把它相加只会得到偏大的结果。判断主线是提交量：
+
+```
+未归因提交 = 提交总量 − Σ进程私有提交 − 分页池 − 非分页池
+```
+
+剩下的部分不属于任何进程，也不属于内核池——驱动分配、会话空间、内核 section、以及
+本进程无权读取的进程都在里面。所以它是上限估计，`status` 会把无权限进程的数量一并
+标出来，不假装精确。
+
+增长用最近 30 分钟的最小二乘斜率衡量，单位 MB/小时。单点高低不算异常，持续增长才算。
+
+设计细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，安全边界见
+[docs/SAFETY.md](docs/SAFETY.md)，Windows 内存为什么"不回落"见
+[docs/DIAGNOSIS.md](docs/DIAGNOSIS.md)。
+
+## 实测
+
+在一台 40 GB 内存的 Windows 机器上首次运行：
+
+- 物理内存 39.2 GB，使用 28.2 GB，可用 11.0 GB；
+- 209 个进程的工作集相加只有 9.1 GB，私有提交相加 17.2 GB；
+- 内核分页池 2.2 GB，非分页池 2.9 GB；
+- 待机缓存 8.0 GB，已修改 16 MB，空闲 3.0 GB；
+- MEMORA 自身 7 MB 工作集、93 个句柄。
+
+工作集 9.1 GB 与在用 28.2 GB 之间的差距，就是现有工具"看不见"的那部分。
+
 ## 项目状态
 
-概念与定位阶段：仓库目前只包含项目定义、设计理念与边界，尚未进入实现。
+v0.1.0 已实现并可运行：采集、判断、决策、执行、日志、CLI 全部落地，单文件静态链接，
+常驻约 7 MB。当前处在"先观察、后动作"的验证阶段：默认守护模式只回收长期空闲进程的
+工作集，清空待机缓存默认关闭。
 
-待定事项：
+尚未完成：
 
-- 许可证（开源前确定）；
-- 技术栈与实现路径（需在真实机器上完成内存异常的复现与归因后再决定）；
-- 可观测性设计：如何证明"没有介入"也是正确行为。
+- 许可证（开源前由作者确定）；
+- 安装包与签名（目前直接分发可执行文件）；
+- 更细的内核归因（pool tag 级定位需要 poolmon/ETW，超出当前范围）。
 
 ## 参与
 
