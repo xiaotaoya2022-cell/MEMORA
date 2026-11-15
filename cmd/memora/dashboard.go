@@ -928,9 +928,16 @@ foreach ($svc in @('LenovoPcManagerService', 'LnvSvcFdn', 'LenovoSmartService', 
         $notes.Add("$svc 停止超时")
       }
     }
-    & sc.exe config $svc start= demand *> $null
-    if ($LASTEXITCODE -eq 0) {
-      $actions.Add("$svc 已改为按需(demand)")
+    if ($svc -in @('LenovoPcManagerService', 'LnvSvcFdn')) {
+      & sc.exe config $svc start= disabled *> $null
+      if ($LASTEXITCODE -eq 0) {
+        $actions.Add("$svc 已彻底禁用自启(disabled)")
+      }
+    } else {
+      & sc.exe config $svc start= demand *> $null
+      if ($LASTEXITCODE -eq 0) {
+        $actions.Add("$svc 已改为按需(demand)")
+      }
     }
   }
 }
@@ -973,8 +980,11 @@ foreach ($svc in @('lnvscenter', 'lrtp', 'netrtp')) {
     & sc.exe config $svc start= disabled *> $null
     $regPath = "HKLM\SYSTEM\CurrentControlSet\Services\$svc"
     & reg.exe add $regPath /v Start /t REG_DWORD /d 4 /f *> $null
-    if ($LASTEXITCODE -eq 0) {
-      $actions.Add("$svc 已写入禁用自启(Start=4)")
+    $curStart = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -ErrorAction SilentlyContinue).Start
+    if ($curStart -eq 4) {
+      $actions.Add("$svc 已彻底禁用自启(Start=4)")
+    } elseif ($null -ne $curStart) {
+      $notes.Add("$svc 注册表仍为 Start=$curStart（请先在联想电脑管家关闭「自我保护」或卸载后再重试）")
     }
   }
 }

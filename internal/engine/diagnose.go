@@ -196,19 +196,19 @@ func computeConflictMitigated(svcs []winmem.ServiceState) bool {
 		return false
 	}
 	hasConflictDrv := false
-	anyRunning := false
+	anyActiveAuto := false
 	for _, s := range svcs {
 		switch strings.ToLower(s.Name) {
 		case "lnvscenter", "lrtp", "netrtp", "lenovopcmanagerservice", "lnvsvcfdn":
 			if s.Exists {
 				hasConflictDrv = true
-				if s.Running {
-					anyRunning = true
+				if s.Running && !strings.EqualFold(s.StartType, "disabled") {
+					anyActiveAuto = true
 				}
 			}
 		}
 	}
-	return hasConflictDrv && !anyRunning
+	return hasConflictDrv && !anyActiveAuto
 }
 
 func findHandleLeakers(groups []ProcGroup) []ProcGroup {
