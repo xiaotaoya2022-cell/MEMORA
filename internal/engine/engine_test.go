@@ -510,3 +510,79 @@ func TestComputeBreakdownCapsDeadProcessOverhead(t *testing.T) {
 		t.Fatalf("buckets sum = %d, want InUseBytes = %d", sumBuckets, bd.InUseBytes)
 	}
 }
+
+func TestConflictMitigatedAndExplorerThreshold(t *testing.T) {
+	if computeConflictMitigated(nil) {
+		t.Fatalf("expected empty services not to report mitigated")
+	}
+	if computeConflictMitigated([]winmem.ServiceState{
+		{Name: "lnvscenter", Exists: true, Running: true},
+		{Name: "lrtp", Exists: true, Running: false},
+	}) {
+		t.Fatalf("expected running lnvscenter not to report mitigated")
+	}
+	if !computeConflictMitigated([]winmem.ServiceState{
+		{Name: "lnvscenter", Exists: true, Running: false},
+		{Name: "LenovoPcManagerService", Exists: true, Running: false},
+		{Name: "sysdiag", Exists: true, Running: true},
+	}) {
+		t.Fatalf("expected stopped conflict drivers/services to report mitigated even with standalone sysdiag running")
+	}
+
+	leakers := findHandleLeakers([]ProcGroup{
+		{Name: "explorer.exe", Count: 1, Handles: 9200},
+		{Name: "small.exe", Count: 1, Handles: 500},
+	})
+	if len(leakers) != 0 {
+		t.Fatalf("expected explorer.exe at 9200 handles not to trigger leaker alert, got %+v", leakers)
+	}
+	leakersHigh := findHandleLeakers([]ProcGroup{
+		{Name: "explorer.exe", Count: 1, Handles: 17500},
+	})
+	if len(leakersHigh) != 1 || leakersHigh[0].Name != "explorer.exe" {
+		t.Fatalf("expected explorer.exe at 17500 handles to trigger leaker alert, got %+v", leakersHigh)
+	}
+}
+
+func TestCaptureProbeMetricsAndDiffShrunk(t *testing.T) {
+	s := Sample{
+		At: time.Now(),
+		Snap: winmem.Snapshot{
+			TotalPhys:   32 << 30,
+			AvailPhys:   10 << 30,
+			SystemCache: 1500 << 20,
+			HasPages:    true,
+			Pages: winmem.Pages{
+				Standby:  4 << 30,
+				Modified: 128 << 20,
+				Free:     6 << 30,
+			},
+		},
+		WS:        8 << 30,
+		PrivateWS: 5 << 30,
+		Private:   5 << 30,
+		Procs: []proc.Info{
+			{PID: 100, Name: "svchost.exe", SessionID: 0, WorkingSet: 600 << 20},
+			{PID: 200, Name: "app.exe", SessionID: 1, WorkingSet: 200 << 20},
+		},
+	}
+	pm := CaptureProbeMetrics(s, false)
+	if pm.SharedWSBytes != 3<<30 {
+		t.Fatalf("SharedWSBytes = %d, want %d", pm.SharedWSBytes, uint64(3<<30))
+	}
+	if pm.SystemCacheBytes != 1500<<20 || pm.StandbyBytes != 4<<30 {
+		t.Fatalf("unexpected page cache metrics: %+v", pm)
+	}
+
+	after := []proc.Info{
+		{PID: 100, Name: "svchost.exe", SessionID: 0, WorkingSet: 120 << 20},
+		{PID: 200, Name: "app.exe", SessionID: 1, WorkingSet: 198 << 20},
+	}
+	deltas := diffShrunkProcesses(s.Procs, after, 10)
+	if len(deltas) != 1 || deltas[0].PID != 100 || deltas[0].ShrunkMB < 470 {
+		t.Fatalf("expected svchost.exe ~480MB shrunk delta, got %+v", deltas)
+	}
+	if !isProtectedCoreSession0("csrss.exe") || isProtectedCoreSession0("svchost.exe") {
+		t.Fatalf("unexpected Session 0 protection classification")
+	}
+}

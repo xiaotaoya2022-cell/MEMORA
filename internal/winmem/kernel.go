@@ -563,3 +563,118 @@ func ReadProcessHandleHolders(minCount uint32) ([]ProcessHandleHolder, error) {
 	}
 	return out, nil
 }
+
+var (
+	procOpenSCManagerW     = advapi32.NewProc("OpenSCManagerW")
+	procOpenServiceW       = advapi32.NewProc("OpenServiceW")
+	procQueryServiceStatus = advapi32.NewProc("QueryServiceStatus")
+	procQueryServiceConfig = advapi32.NewProc("QueryServiceConfigW")
+	procCloseServiceHandle = advapi32.NewProc("CloseServiceHandle")
+)
+
+type winServiceStatus struct {
+	ServiceType             uint32
+	CurrentState            uint32
+	ControlsAccepted        uint32
+	Win32ExitCode           uint32
+	ServiceSpecificExitCode uint32
+	CheckPoint              uint32
+	WaitHint                uint32
+}
+
+type winQueryServiceConfig struct {
+	ServiceType      uint32
+	StartType        uint32
+	ErrorControl     uint32
+	BinaryPathName   *uint16
+	LoadOrderGroup   *uint16
+	TagId            uint32
+	Dependencies     *uint16
+	ServiceStartName *uint16
+	DisplayName      *uint16
+}
+
+// ServiceState summarizes the live SCM runtime state and start type for a service/driver.
+type ServiceState struct {
+	Name      string `json:"name"`
+	Exists    bool   `json:"exists"`
+	Running   bool   `json:"running"`
+	State     string `json:"state"`
+	StartType string `json:"start_type"`
+}
+
+// ReadServiceStates queries Windows SCM directly (without spawning sc.exe) for the given services/drivers.
+func ReadServiceStates(names []string) []ServiceState {
+	const (
+		scManagerConnect   = 0x0001
+		serviceQueryConfig = 0x0001
+		serviceQueryStatus = 0x0004
+	)
+	scm, _, _ := procOpenSCManagerW.Call(0, 0, scManagerConnect)
+	if scm == 0 {
+		return nil
+	}
+	defer procCloseServiceHandle.Call(scm)
+
+	out := make([]ServiceState, 0, len(names))
+	for _, name := range names {
+		pName, err := syscall.UTF16PtrFromString(name)
+		if err != nil {
+			continue
+		}
+		svc, _, _ := procOpenServiceW.Call(scm, uintptr(unsafe.Pointer(pName)), serviceQueryConfig|serviceQueryStatus)
+		if svc == 0 {
+			out = append(out, ServiceState{Name: name, Exists: false, State: "not_found"})
+			continue
+		}
+		var st winServiceStatus
+		stateStr := "unknown"
+		running := false
+		if r, _, _ := procQueryServiceStatus.Call(svc, uintptr(unsafe.Pointer(&st))); r != 0 {
+			switch st.CurrentState {
+			case 1:
+				stateStr = "stopped"
+			case 2:
+				stateStr = "start_pending"
+			case 3:
+				stateStr = "stop_pending"
+			case 4:
+				stateStr = "running"
+				running = true
+			case 5:
+				stateStr = "continue_pending"
+			case 6:
+				stateStr = "pause_pending"
+			case 7:
+				stateStr = "paused"
+			}
+		}
+		startStr := "unknown"
+		var needed uint32
+		cfgBuf := make([]byte, 4096)
+		if r, _, _ := procQueryServiceConfig.Call(svc, uintptr(unsafe.Pointer(&cfgBuf[0])), uintptr(len(cfgBuf)), uintptr(unsafe.Pointer(&needed))); r != 0 {
+			cfg := (*winQueryServiceConfig)(unsafe.Pointer(&cfgBuf[0]))
+			switch cfg.StartType {
+			case 0:
+				startStr = "boot"
+			case 1:
+				startStr = "system"
+			case 2:
+				startStr = "auto"
+			case 3:
+				startStr = "demand"
+			case 4:
+				startStr = "disabled"
+			}
+		}
+		_, _, _ = procCloseServiceHandle.Call(svc)
+		out = append(out, ServiceState{
+			Name:      name,
+			Exists:    true,
+			Running:   running,
+			State:     stateStr,
+			StartType: startStr,
+		})
+	}
+	return out
+}

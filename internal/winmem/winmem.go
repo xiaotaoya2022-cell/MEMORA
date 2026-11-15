@@ -11,6 +11,7 @@ const (
 	// SYSTEM_INFORMATION_CLASS enum. It is not in the public SDK.
 	systemMemoryListInformation = 0x50
 	// Commands accepted by NtSetSystemInformation for SystemMemoryListInformation.
+	memoryEmptyWorkingSets            = 2
 	memoryFlushModifiedList           = 3
 	memoryPurgeStandbyList            = 4
 	memoryPurgeLowPriorityStandbyList = 5
@@ -27,6 +28,7 @@ var (
 	ntdll    = syscall.NewLazyDLL("ntdll.dll")
 
 	procGlobalMemoryStatusEx     = kernel32.NewProc("GlobalMemoryStatusEx")
+	procSetSystemFileCacheSize   = kernel32.NewProc("SetSystemFileCacheSize")
 	procGetPerformanceInfo       = psapi.NewProc("GetPerformanceInfo")
 	procNtQuerySystemInformation = ntdll.NewProc("NtQuerySystemInformation")
 	procNtSetSystemInformation   = ntdll.NewProc("NtSetSystemInformation")
@@ -241,6 +243,26 @@ func readPages() (Pages, bool) {
 		return Pages{}, false
 	}
 	return p, true
+}
+
+// EmptyAllWorkingSets invokes Windows MemoryEmptyWorkingSets across all
+// trimmable user/service working sets and shared pages (equivalent to RAMMap).
+func EmptyAllWorkingSets() error {
+	return runMemoryListCommand(memoryEmptyWorkingSets)
+}
+
+// TrimSystemFileCache asks the Windows memory manager to flush the system file
+// cache working set via SetSystemFileCacheSize((SIZE_T)-1, (SIZE_T)-1, 0).
+func TrimSystemFileCache() error {
+	if err := EnablePrivilege("SeIncreaseQuotaPrivilege"); err != nil {
+		return fmt.Errorf("enable SeIncreaseQuotaPrivilege: %w", err)
+	}
+	maxVal := ^uintptr(0)
+	r, _, err := procSetSystemFileCacheSize.Call(maxVal, maxVal, 0)
+	if r == 0 {
+		return fmt.Errorf("SetSystemFileCacheSize: %w", err)
+	}
+	return nil
 }
 
 // PurgeStandby drops clean cached pages from the standby list. It needs

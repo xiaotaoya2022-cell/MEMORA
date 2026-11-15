@@ -44,13 +44,20 @@ type OptimizeTarget struct {
 
 // OptimizeResult summarizes an on-demand smart optimization sweep.
 type OptimizeResult struct {
-	TrimmedCount  int              `json:"trimmed_count"`
-	WSShrunkMB    float64          `json:"ws_shrunk_mb"`
-	AvailGainMB   float64          `json:"avail_gain_mb"`
-	StandbyPurged bool             `json:"standby_purged"`
-	ModifiedFlush bool             `json:"modified_flushed"`
-	DurationMS    int64            `json:"duration_ms"`
-	Targets       []OptimizeTarget `json:"targets,omitempty"`
+	Extreme               bool             `json:"extreme"`
+	TrimmedCount          int              `json:"trimmed_count"`
+	ServiceTrimmedCount   int              `json:"service_trimmed_count"`
+	WSShrunkMB            float64          `json:"ws_shrunk_mb"`
+	AvailGainMB           float64          `json:"avail_gain_mb"`
+	SharedWSDeltaMB       float64          `json:"shared_ws_delta_mb"`
+	SysCacheDeltaMB       float64          `json:"syscache_delta_mb"`
+	StandbyDeltaMB        float64          `json:"standby_delta_mb"`
+	StandbyPurged         bool             `json:"standby_purged"`
+	ModifiedFlush         bool             `json:"modified_flushed"`
+	CacheTrimmed          bool             `json:"cache_trimmed"`
+	AllWorkingSetsEmptied bool             `json:"all_working_sets_emptied"`
+	DurationMS            int64            `json:"duration_ms"`
+	Targets               []OptimizeTarget `json:"targets,omitempty"`
 }
 
 // MemoryBreakdown decomposes TotalPhys into non-overlapping buckets summing to TotalPhys.
@@ -870,6 +877,9 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	var shrunkBytes uint64
 	if e.cfg.Actions.TrimIdleWorkingSets {
 		cands := e.trimCandidates(s.Procs, opts.TargetPID, family, s.At, minWS, idleReq, procCooldown, maxBatch)
+		if len(cands) > 0 {
+			MarkSelfMemoryAction()
+		}
 		for _, p := range cands {
 			if delta, err := proc.TrimWorkingSetMeasured(p.PID); err == nil {
 				e.trimmedPIDs[p.PID] = s.At
@@ -889,6 +899,7 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	if tier >= 3 && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
 		float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB &&
 		s.At.Sub(e.lastPurge) >= 5*time.Minute {
+		MarkSelfMemoryAction()
 		if err := winmem.FlushModified(); err == nil {
 			flushed = true
 		}
@@ -991,71 +1002,107 @@ func (e *Engine) trimCandidates(
 	return cands
 }
 
+func isProtectedCoreSession0(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "system", "idle", "system idle process", "registry", "secure system",
+		"memory compression", "smss.exe", "csrss.exe", "wininit.exe", "services.exe",
+		"lsass.exe", "lsaiso.exe", "winlogon.exe", "dwm.exe", "audiodg.exe",
+		"memora.exe", "fontdrvhost.exe", "sihost.exe", "vmmem", "vmmemwsl":
+		return true
+	default:
+		return false
+	}
+}
+
 // OptimizeNow executes an immediate safe smart-scheduling pass on non-foreground idle processes
-// and flushes modified/low-priority standby pages, reporting exact measured gains.
+// and safe Session 0 services, trimming system cache and low-priority standby pages.
 func (e *Engine) OptimizeNow() (OptimizeResult, error) {
+	return e.OptimizeWithMode(false)
+}
+
+// OptimizeWithMode executes either standard deep reclamation (extreme=false) or RAMMap-grade
+// system-wide working set / cache / standby reclamation (extreme=true, manual-only).
+func (e *Engine) OptimizeWithMode(extreme bool) (OptimizeResult, error) {
 	started := time.Now()
+	MarkSelfMemoryAction()
 	s, err := e.collect(Options{})
 	if err != nil {
 		return OptimizeResult{}, err
 	}
+	beforeMetrics := CaptureProbeMetrics(s, false)
 	a := e.assess(s)
 	fgPID := proc.ForegroundPID()
 	family := proc.FamilyPIDs(s.Procs, fgPID)
+	familyNames := make(map[string]bool)
+	for _, p := range s.Procs {
+		if family[p.PID] && p.Name != "" {
+			familyNames[strings.ToLower(strings.TrimSpace(p.Name))] = true
+		}
+	}
 	selfPID := uint32(os.Getpid())
-	const minBytes = 20 << 20
+	const minBytes = 8 << 20
 
 	var targets []proc.Info
 	for _, p := range s.Procs {
-		if p.SessionID == 0 || p.PID == selfPID || p.PID <= 4 || family[p.PID] || e.isProtected(p.Name) {
+		if p.PID == selfPID || p.PID <= 4 || p.WorkingSet < minBytes {
 			continue
 		}
-		if p.WorkingSet < minBytes {
-			continue
-		}
-		if e.lastCPUPct[p.PID] >= 2.0 {
-			continue
+		lowerName := strings.ToLower(strings.TrimSpace(p.Name))
+		if p.SessionID == 0 {
+			if isProtectedCoreSession0(lowerName) || e.isProtected(p.Name) || e.lastCPUPct[p.PID] >= 3.0 {
+				continue
+			}
+		} else {
+			if family[p.PID] || familyNames[lowerName] || e.isProtected(p.Name) || e.lastCPUPct[p.PID] >= 2.0 {
+				continue
+			}
 		}
 		targets = append(targets, p)
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].WorkingSet > targets[j].WorkingSet })
 
-	var res OptimizeResult
+	res := OptimizeResult{Extreme: extreme}
 	var jTargets []journal.Target
 	var totalShrunk uint64
 
 	for _, p := range targets {
-		st := e.softState[p.PID]
-		st.Name = p.Name
-		st.WorkingSet = p.WorkingSet
-		st.Private = p.Private
-		if st.ManagedAt.IsZero() {
-			st.ManagedAt = started
-		}
-		if e.cfg.Actions.SoftMemoryPriority && st.MemoryPriority != proc.MemoryPriorityVeryLow {
-			if err := proc.SetMemoryPriority(p.PID, proc.MemoryPriorityVeryLow); err == nil {
-				st.MemoryPriority = proc.MemoryPriorityVeryLow
+		if p.SessionID != 0 {
+			st := e.softState[p.PID]
+			st.Name = p.Name
+			st.WorkingSet = p.WorkingSet
+			st.Private = p.Private
+			if st.ManagedAt.IsZero() {
+				st.ManagedAt = started
 			}
-		}
-		if e.cfg.Actions.EcoQoSBackground {
-			if !st.EcoQoS {
-				if err := proc.SetEcoQoS(p.PID, true); err == nil {
-					st.EcoQoS = true
+			if e.cfg.Actions.SoftMemoryPriority && st.MemoryPriority != proc.MemoryPriorityVeryLow {
+				if err := proc.SetMemoryPriority(p.PID, proc.MemoryPriorityVeryLow); err == nil {
+					st.MemoryPriority = proc.MemoryPriorityVeryLow
 				}
 			}
-			if !st.BelowNormal {
-				if err := proc.SetBelowNormalPriority(p.PID, true); err == nil {
-					st.BelowNormal = true
+			if e.cfg.Actions.EcoQoSBackground {
+				if !st.EcoQoS {
+					if err := proc.SetEcoQoS(p.PID, true); err == nil {
+						st.EcoQoS = true
+					}
+				}
+				if !st.BelowNormal {
+					if err := proc.SetBelowNormalPriority(p.PID, true); err == nil {
+						st.BelowNormal = true
+					}
 				}
 			}
-		}
-		if st.MemoryPriority != 0 || st.EcoQoS || st.BelowNormal {
-			e.softState[p.PID] = st
+			if st.MemoryPriority != 0 || st.EcoQoS || st.BelowNormal {
+				e.softState[p.PID] = st
+			}
 		}
 
 		if delta, err := proc.TrimWorkingSetMeasured(p.PID); err == nil {
 			e.trimmedPIDs[p.PID] = started
-			e.recordTrimObservation(p, delta, started)
+			if p.SessionID != 0 {
+				e.recordTrimObservation(p, delta, started)
+			} else {
+				res.ServiceTrimmedCount++
+			}
 			res.TrimmedCount++
 			totalShrunk += delta
 			mb := float64(delta) / (1 << 20)
@@ -1076,10 +1123,18 @@ func (e *Engine) OptimizeNow() (OptimizeResult, error) {
 		}
 	}
 
+	if extreme {
+		if err := winmem.EmptyAllWorkingSets(); err == nil {
+			res.AllWorkingSetsEmptied = true
+		}
+	}
+	if err := winmem.TrimSystemFileCache(); err == nil {
+		res.CacheTrimmed = true
+	}
 	if err := winmem.FlushModified(); err == nil {
 		res.ModifiedFlush = true
 	}
-	if a.AvailPct < 18 {
+	if extreme || a.AvailPct < 18 {
 		if err := winmem.PurgeStandby(); err == nil {
 			res.StandbyPurged = true
 			e.lastPurge = started
@@ -1091,11 +1146,48 @@ func (e *Engine) OptimizeNow() (OptimizeResult, error) {
 		res.StandbyPurged = true
 		e.lastPurge = started
 	}
+	MarkSelfMemoryAction()
 
-	afterSnap, err := winmem.Collect()
-	if err == nil && afterSnap.AvailPhys > s.Snap.AvailPhys {
-		res.AvailGainMB = float64(afterSnap.AvailPhys-s.Snap.AvailPhys) / (1 << 20)
+	afterSample, afterErr := e.collect(Options{})
+	var afterSnap winmem.Snapshot
+	if afterErr == nil {
+		afterSnap = afterSample.Snap
+		afterMetrics := CaptureProbeMetrics(afterSample, false)
+		if afterSnap.AvailPhys > s.Snap.AvailPhys {
+			res.AvailGainMB = float64(afterSnap.AvailPhys-s.Snap.AvailPhys) / (1 << 20)
+		}
+		res.SharedWSDeltaMB = float64(int64(afterMetrics.SharedWSBytes)-int64(beforeMetrics.SharedWSBytes)) / (1 << 20)
+		res.SysCacheDeltaMB = float64(int64(afterMetrics.SystemCacheBytes)-int64(beforeMetrics.SystemCacheBytes)) / (1 << 20)
+		res.StandbyDeltaMB = float64(int64(afterMetrics.StandbyBytes)-int64(beforeMetrics.StandbyBytes)) / (1 << 20)
+		RecordProbeEvent(ProbeRecord{
+			At:              time.Now(),
+			Kind:            "memora_optimize",
+			Note:            fmt.Sprintf("manual_optimize extreme=%v trimmed=%d svc=%d cacheTrimmed=%v allWS=%v", extreme, res.TrimmedCount, res.ServiceTrimmedCount, res.CacheTrimmed, res.AllWorkingSetsEmptied),
+			Before:          &beforeMetrics,
+			After:           &afterMetrics,
+			AvailDeltaMB:    res.AvailGainMB,
+			SharedWSDeltaMB: res.SharedWSDeltaMB,
+			PrivWSDeltaMB:   float64(int64(afterMetrics.PrivateWSBytes)-int64(beforeMetrics.PrivateWSBytes)) / (1 << 20),
+			StandbyDeltaMB:  res.StandbyDeltaMB,
+			SysCacheDeltaMB: res.SysCacheDeltaMB,
+			TopShrunkProcs:  diffShrunkProcesses(s.Procs, afterSample.Procs, 15),
+			Extra: map[string]any{
+				"extreme":                  extreme,
+				"trimmed_count":            res.TrimmedCount,
+				"service_trimmed_count":    res.ServiceTrimmedCount,
+				"all_working_sets_emptied": res.AllWorkingSetsEmptied,
+				"cache_trimmed":            res.CacheTrimmed,
+				"standby_purged":           res.StandbyPurged,
+			},
+		})
+	} else if cs, cErr := winmem.Collect(); cErr == nil {
+		afterSnap = cs
+		afterErr = nil
+		if cs.AvailPhys > s.Snap.AvailPhys {
+			res.AvailGainMB = float64(cs.AvailPhys-s.Snap.AvailPhys) / (1 << 20)
+		}
 	}
+
 	res.WSShrunkMB = float64(totalShrunk) / (1 << 20)
 	res.DurationMS = time.Since(started).Milliseconds()
 
@@ -1105,14 +1197,20 @@ func (e *Engine) OptimizeNow() (OptimizeResult, error) {
 	}
 	b := statsOf(a)
 	var af *journal.Stats
-	if err == nil {
+	if afterErr == nil {
 		afVal := statsOf(Assessment{Snap: afterSnap, AvailPct: afterSnap.AvailablePercent()})
 		af = &afVal
 	}
+	actionName := "manual_smart_optimize"
+	reasonPrefix := "用户手动触发一键深度释压"
+	if extreme {
+		actionName = "manual_extreme_optimize"
+		reasonPrefix = "用户手动触发强力全域释压"
+	}
 	e.record(journal.Entry{
 		Kind:        "action",
-		Action:      "manual_smart_optimize",
-		Reason:      fmt.Sprintf("用户手动触发一键智能调度（压缩 %d 个后台进程工作集 %.0f MB，系统可用净增 %.0f MB）", res.TrimmedCount, res.WSShrunkMB, res.AvailGainMB),
+		Action:      actionName,
+		Reason:      fmt.Sprintf("%s（压缩 %d 个工作集 %.0f MB [含系统服务 %d 个]，系统可用净增 %.0f MB）", reasonPrefix, res.TrimmedCount, res.WSShrunkMB, res.ServiceTrimmedCount, res.AvailGainMB),
 		Before:      &b,
 		After:       af,
 		Targets:     jTargets,

@@ -265,6 +265,9 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	if opts.OnReading != nil {
 		opts.OnReading(s)
 	}
+	if opts.TargetPID == 0 {
+		ObserveProbeSample(s)
+	}
 
 	a := e.assess(s)
 	fgPID := proc.ForegroundPID()
@@ -627,6 +630,9 @@ func (e *Engine) execute(opts Options, plan Plan, before Assessment) (Assessment
 		})
 	}
 
+	if len(plan.Trim) > 0 || plan.Purge {
+		MarkSelfMemoryAction()
+	}
 	var failures []string
 	for _, p := range plan.Trim {
 		if err := proc.TrimWorkingSet(p.PID); err != nil {

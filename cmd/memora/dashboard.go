@@ -644,10 +644,19 @@ func (d *dashboardServer) handleOptimize(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	var req struct {
+		Extreme bool   `json:"extreme"`
+		Mode    string `json:"mode"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	extreme := req.Extreme || strings.EqualFold(strings.TrimSpace(req.Mode), "extreme") || strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("mode")), "extreme")
+
 	var res engine.OptimizeResult
 	var opErr error
 	err := d.runOnEngine(func(eng *engine.Engine) {
-		res, opErr = eng.OptimizeNow()
+		res, opErr = eng.OptimizeWithMode(extreme)
 		if opErr != nil {
 			return
 		}
@@ -662,6 +671,19 @@ func (d *dashboardServer) handleOptimize(w http.ResponseWriter, r *http.Request)
 	if opErr != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": opErr.Error()})
 		return
+	}
+	if extreme && winmem.ReadSystemExtras(4096).VidBytes >= 64<<20 {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, "wsl.exe", "--user", "root", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+		if runErr := cmd.Run(); runErr == nil {
+			res.CacheTrimmed = true
+			_, _, _ = d.refreshSnapshotNow(false)
+		}
+		cancel()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"result": res,
@@ -877,43 +899,29 @@ func (d *dashboardServer) handleWSLReclaim(w http.ResponseWriter, r *http.Reques
 }
 
 func mitigateConflictDrivers(ctx context.Context, elevateIfNeeded bool) (string, error) {
-	// Unload minifilter drivers (fltmc unload) and stop/disable Lenovo conflict services.
-	// Even when lrtp.sys protects HKLM\...\Start=1 across reboots, runtime mitigation
-	// unloads lnvscenter and stops LnvSvcFdn / LenovoPcManagerService cleanly on startup.
+	// Stop user-mode Lenovo host services and processes FIRST so FltMgr ports and
+	// self-protection watchdogs release before unloading kernel minifilters (lnvscenter, lrtp, netrtp).
 	const script = `
 $ErrorActionPreference = 'Continue'
 $actions = New-Object System.Collections.Generic.List[string]
-foreach ($svc in @('lnvscenter', 'lrtp', 'netrtp')) {
+$notes = New-Object System.Collections.Generic.List[string]
+
+foreach ($svc in @('LenovoPcManagerService', 'LnvSvcFdn', 'LenovoSmartService', 'LenovoUtilityService')) {
   $q = & sc.exe query $svc 2>$null
   if ($LASTEXITCODE -eq 0) {
     $qText = $q -join ' '
-    if ($qText -match 'RUNNING') {
-      & fltmc.exe unload $svc *> $null
-      if ($LASTEXITCODE -eq 0) {
-        $actions.Add("已卸载内核过滤驱动 $svc")
-      } else {
-        & sc.exe stop $svc *> $null
-        if ($LASTEXITCODE -eq 0) {
-          $actions.Add("已停止内核驱动 $svc")
-        }
-      }
-    }
-    & sc.exe config $svc start= disabled *> $null
-    $regPath = "HKLM\SYSTEM\CurrentControlSet\Services\$svc"
-    & reg.exe add $regPath /v Start /t REG_DWORD /d 4 /f *> $null
-    if ($LASTEXITCODE -eq 0) {
-      $actions.Add("$svc 已写入禁用自启")
-    }
-  }
-}
-foreach ($svc in @('LnvSvcFdn', 'LenovoPcManagerService')) {
-  $q = & sc.exe query $svc 2>$null
-  if ($LASTEXITCODE -eq 0) {
-    $qText = $q -join ' '
-    if ($qText -match 'RUNNING') {
+    if ($qText -match 'RUNNING|START_PENDING|PAUSED') {
       & sc.exe stop $svc *> $null
-      if ($LASTEXITCODE -eq 0) {
-        $actions.Add("已停止关联宿主服务 $svc")
+      $stopped = $false
+      for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Milliseconds 200
+        $st = (& sc.exe query $svc 2>$null) -join ' '
+        if ($st -match 'STOPPED') { $stopped = $true; break }
+      }
+      if ($stopped) {
+        $actions.Add("已停止宿主服务 $svc")
+      } else {
+        $notes.Add("$svc 停止超时")
       }
     }
     & sc.exe config $svc start= demand *> $null
@@ -922,13 +930,51 @@ foreach ($svc in @('LnvSvcFdn', 'LenovoPcManagerService')) {
     }
   }
 }
-foreach ($pname in @('LenovoPcManagerService', 'LenovoPcManager', 'LnvSvcFdn')) {
+
+foreach ($pname in @('LenovoPcManagerService', 'LenovoPcManager', 'LnvSvcFdn', 'LenovoSmartService', 'LenovoUtilityService')) {
   $ps = Get-Process -Name $pname -ErrorAction SilentlyContinue
   if ($null -ne $ps) {
     $ps | Stop-Process -Force -ErrorAction SilentlyContinue
-    $actions.Add("已清理残留进程 $pname")
+    Start-Sleep -Milliseconds 250
+    $left = Get-Process -Name $pname -ErrorAction SilentlyContinue
+    if ($null -eq $left) {
+      $actions.Add("已结束宿主进程 $pname")
+    } else {
+      $notes.Add("进程 $pname 受保护未能强制结束")
+    }
   }
 }
+
+foreach ($svc in @('lnvscenter', 'lrtp', 'netrtp')) {
+  $q = & sc.exe query $svc 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    $qText = $q -join ' '
+    if ($qText -match 'RUNNING') {
+      $fltOut = (& fltmc.exe unload $svc 2>&1) -join ' '
+      $unloaded = ($LASTEXITCODE -eq 0)
+      if (-not $unloaded) {
+        $scOut = (& sc.exe stop $svc 2>&1) -join ' '
+        Start-Sleep -Milliseconds 300
+        $recheck = (& sc.exe query $svc 2>$null) -join ' '
+        if ($recheck -match 'STOPPED') {
+          $unloaded = $true
+        } else {
+          $notes.Add("$svc 运行时卸载被内核保护拦截($($fltOut.Trim()))，已尝试禁用自启")
+        }
+      }
+      if ($unloaded) {
+        $actions.Add("已卸载冲突过滤驱动 $svc")
+      }
+    }
+    & sc.exe config $svc start= disabled *> $null
+    $regPath = "HKLM\SYSTEM\CurrentControlSet\Services\$svc"
+    & reg.exe add $regPath /v Start /t REG_DWORD /d 4 /f *> $null
+    if ($LASTEXITCODE -eq 0) {
+      $actions.Add("$svc 已写入禁用自启(Start=4)")
+    }
+  }
+}
+
 $esProcs = Get-Process -Name 'ESurfingSvr' -ErrorAction SilentlyContinue
 $maxHandles = 0
 if ($null -ne $esProcs) {
@@ -947,15 +993,20 @@ if ($maxHandles -gt 5000) {
     $actions.Add("已重启高句柄宿主 ESurfingSvr (原 ${maxHandles} 句柄)")
   }
 }
-if ($actions.Count -eq 0) {
-  Write-Output "已完成冲突驱动卸载与服务校验（无正在运行的冲突项）"
+
+if ($actions.Count -eq 0 -and $notes.Count -eq 0) {
+  Write-Output "已完成驱动与宿主服务校验：当前未检测到运行中的冲突驱动"
 } else {
-  Write-Output ($actions -join '；')
+  $parts = @()
+  if ($actions.Count -gt 0) { $parts += ($actions -join '；') }
+  if ($notes.Count -gt 0) { $parts += ("提示：" + ($notes -join '；')) }
+  Write-Output ($parts -join ' | ')
 }
 `
 	out, cmdErr := runHiddenPowerShell(ctx, script, elevateIfNeeded)
 	engine.ResetDriverScanCache()
-	return strings.TrimSpace(string(out)), cmdErr
+	clean := strings.TrimSpace(strings.TrimPrefix(string(out), "\xef\xbb\xbf"))
+	return clean, cmdErr
 }
 
 func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Request) {
@@ -963,17 +1014,46 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
 
+	var beforeMetrics *engine.ProbeMetrics
 	_ = d.runOnEngine(func(eng *engine.Engine) {
 		_ = eng.UpdateConfig(func(c *config.Config) {
 			c.Actions.MitigateConflictDrivers = true
 		})
 	})
+	if snap, err := winmem.Collect(); err == nil {
+		if procs, pErr := proc.List(); pErr == nil {
+			m := engine.CaptureProbeMetrics(engine.Sample{At: time.Now(), Snap: snap, Procs: procs}, true)
+			beforeMetrics = &m
+		}
+	}
 
 	msg, cmdErr := mitigateConflictDrivers(ctx, !winmem.IsAdmin())
-	_, _, _ = d.refreshSnapshotNow(true)
+	afterSnap, _, _ := d.refreshSnapshotNow(true)
+	state := d.snapshotState()
+
+	if snapProcs, pErr := proc.List(); pErr == nil {
+		afterM := engine.CaptureProbeMetrics(engine.Sample{At: time.Now(), Snap: afterSnap, Procs: snapProcs}, true)
+		engine.RecordProbeEvent(engine.ProbeRecord{
+			At:           time.Now(),
+			Kind:         "conflict_mitigation",
+			Note:         msg,
+			Before:       beforeMetrics,
+			After:        &afterM,
+			AvailDeltaMB: func() float64 {
+				if beforeMetrics == nil {
+					return 0
+				}
+				return float64(int64(afterM.AvailBytes)-int64(beforeMetrics.AvailBytes)) / (1 << 20)
+			}(),
+			Extra: map[string]any{
+				"ok":                 cmdErr == nil,
+				"conflict_mitigated": state.Deep.ConflictMitigated,
+			},
+		})
+	}
 
 	if cmdErr != nil {
 		if msg == "" {
@@ -982,14 +1062,15 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 	} else if msg == "" {
 		msg = "已运行时卸载冲突过滤驱动并停止/降档联想后台服务（已在 config.json 启用每次开机自动静默压制）"
 	} else {
-		msg = msg + "（已启用重启后开机自动静默压制）"
+		msg = msg + "（已启用开机自动静默压制；已积累的历史内核对象将在下次重启后清零）"
 	}
 
 	res := map[string]any{
-		"ok":      cmdErr == nil,
-		"message": msg,
-		"output":  msg,
-		"state":   d.snapshotState(),
+		"ok":                 cmdErr == nil,
+		"conflict_mitigated": state.Deep.ConflictMitigated,
+		"message":            msg,
+		"output":             msg,
+		"state":              state,
 	}
 	if cmdErr != nil {
 		res["error"] = cmdErr.Error()
@@ -998,8 +1079,9 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 }
 
 func runHiddenPowerShell(ctx context.Context, script string, elevate bool) ([]byte, error) {
-	encoded := encodePowerShellCommand(script)
+	utf8Header := "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n"
 	if !elevate {
+		encoded := encodePowerShellCommand(utf8Header + script)
 		cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			HideWindow:    true,
@@ -1007,13 +1089,29 @@ func runHiddenPowerShell(ctx context.Context, script string, elevate bool) ([]by
 		}
 		return cmd.CombinedOutput()
 	}
+
+	tmpFile, err := os.CreateTemp("", "memora-ps-out-*.txt")
+	if err != nil {
+		return nil, err
+	}
+	outPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(outPath) }()
+
+	escapedOut := strings.ReplaceAll(outPath, "'", "''")
+	wrappedScript := fmt.Sprintf("%s$__memoraOut = & { %s } 2>&1 | Out-String; [System.IO.File]::WriteAllText('%s', $__memoraOut, [System.Text.UTF8Encoding]::new($false))", utf8Header, script, escapedOut)
+	encoded := encodePowerShellCommand(wrappedScript)
 	wrapper := fmt.Sprintf("$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand','%s') -Verb RunAs -Wait -PassThru; exit $p.ExitCode", encoded)
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", wrapper)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: 0x08000000,
 	}
-	return cmd.CombinedOutput()
+	cmdOut, cmdErr := cmd.CombinedOutput()
+	if data, readErr := os.ReadFile(outPath); readErr == nil && len(data) > 0 {
+		return data, cmdErr
+	}
+	return cmdOut, cmdErr
 }
 
 func encodePowerShellCommand(script string) string {
@@ -1221,15 +1319,18 @@ func (d *dashboardServer) handleExportReport(w http.ResponseWriter, r *http.Requ
 	}
 	procMap, _ := aggregateJournalTargets(entries, state.Assessment.AdaptiveCooldownProcs, 0)
 
+	probes := engine.LoadTelemetryProbes(250)
 	report := map[string]any{
-		"exported_at":    time.Now(),
-		"version":        version,
-		"config_dir":     config.Dir(),
-		"current_state":  state,
-		"action_counts":  byAction,
-		"target_summary": procMap,
-		"journal_count":  len(entries),
-		"journal":        entries,
+		"exported_at":      time.Now(),
+		"version":          version,
+		"config_dir":       config.Dir(),
+		"current_state":    state,
+		"action_counts":    byAction,
+		"target_summary":   procMap,
+		"journal_count":    len(entries),
+		"journal":          entries,
+		"probe_count":      len(probes),
+		"telemetry_probes": probes,
 	}
 	fname := fmt.Sprintf("memora-diagnostic-report-%s.json", time.Now().Format("20060102-150405"))
 	if mode == "save" || r.Method == http.MethodPost {

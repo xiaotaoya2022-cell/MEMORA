@@ -73,6 +73,8 @@ type DeepDiagnosis struct {
 	ProcGroups           []ProcGroup             `json:"proc_groups,omitempty"`
 	HandleLeakers        []ProcGroup             `json:"handle_leakers,omitempty"`
 	DriversScanned       bool                    `json:"drivers_scanned"`
+	ConflictServices     []winmem.ServiceState   `json:"conflict_services,omitempty"`
+	ConflictMitigated    bool                    `json:"conflict_mitigated"`
 }
 
 // GroupProcesses aggregates processes by case-insensitive image name, sorted by Private bytes desc.
@@ -179,13 +181,47 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 		attachDriverMatches(&d, matchDrivers)
 	}
 
+	d.ConflictServices = winmem.ReadServiceStates([]string{
+		"lnvscenter", "lrtp", "netrtp",
+		"LenovoPcManagerService", "LnvSvcFdn", "LenovoSmartService", "LenovoUtilityService",
+		"sysdiag", "ESurfingSvr",
+	})
+	d.ConflictMitigated = computeConflictMitigated(d.ConflictServices)
+
 	return d
+}
+
+func computeConflictMitigated(svcs []winmem.ServiceState) bool {
+	if len(svcs) == 0 {
+		return false
+	}
+	hasConflictDrv := false
+	anyRunning := false
+	for _, s := range svcs {
+		switch strings.ToLower(s.Name) {
+		case "lnvscenter", "lrtp", "netrtp", "lenovopcmanagerservice", "lnvsvcfdn":
+			if s.Exists {
+				hasConflictDrv = true
+				if s.Running {
+					anyRunning = true
+				}
+			}
+		}
+	}
+	return hasConflictDrv && !anyRunning
 }
 
 func findHandleLeakers(groups []ProcGroup) []ProcGroup {
 	var out []ProcGroup
 	for _, g := range groups {
-		if !strings.EqualFold(g.Name, "System") && g.Count <= 3 && g.Handles >= 8000 {
+		if strings.EqualFold(g.Name, "System") {
+			continue
+		}
+		minHandles := uint32(8000)
+		if strings.EqualFold(g.Name, "explorer.exe") {
+			minHandles = 16000
+		}
+		if g.Count <= 3 && g.Handles >= minHandles {
 			out = append(out, g)
 		}
 	}

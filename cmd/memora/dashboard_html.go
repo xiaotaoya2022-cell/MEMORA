@@ -541,6 +541,12 @@ const dashboardHTML = `<!doctype html>
       gap: 6px;
     }
     .btn-ghost:hover { background: #f8fafc; border-color: #cbd5e1; }
+    .btn-ghost.btn-confirm {
+      border-color: #f59e0b;
+      background: #fffbeb;
+      color: #b45309;
+    }
+    .btn-ghost:disabled { opacity: 0.6; cursor: wait; }
 
     /* Elastic Sliding Pill Toggle Switch (智能调度 / 关闭) */
     .mode-switch {
@@ -1589,7 +1595,11 @@ const dashboardHTML = `<!doctype html>
           <svg class="ico" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <span id="btn-opt-text">立即深度释压</span>
         </button>
-        <div class="btn-primary-hint">单次收紧闲置工作集与低优待机页（非开关）</div>
+        <div class="btn-primary-hint">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
+        <button class="btn-ghost" id="btn-optimize-extreme" onclick="doOptimizeExtreme()" title="手动全域清空所有空闲工作集、系统文件缓存与待机列表（极客模式，仅手动触发）">
+          <svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/></svg>
+          <span id="btn-opt-ext-text">强力全域释压（含服务与缓存）</span>
+        </button>
 
         <div class="mode-switch" id="mode-switch">
           <div class="mode-slider-thumb" id="mode-slider-thumb"></div>
@@ -1642,7 +1652,7 @@ const dashboardHTML = `<!doctype html>
               <div class="legend-pct" id="bd-zombie-pct">--</div>
             </div>
             <div class="legend-item spot-surface spot-sm" data-seg="kernel">
-              <div class="legend-top"><span class="dot" style="background:#f59e0b"></span>常规内核与共享页</div>
+              <div class="legend-top"><span class="dot" style="background:#f59e0b"></span>常规内核 · 共享与缓存</div>
               <div class="legend-val val-tween" id="bd-kernel-val">--</div>
               <div class="legend-pct" id="bd-kernel-pct">--</div>
             </div>
@@ -2480,9 +2490,9 @@ const dashboardHTML = `<!doctype html>
           .join("、");
         return {
           color: "#f59e0b",
-          title: "常规内核池与系统/共享驻留页",
+          title: "常规内核池 · 系统文件缓存 · 共享驻留页",
           val: fmtBytes(bd.kernel_driver_bytes) + " (" + pct(bd.kernel_driver_bytes) + ")",
-          body: "包含内核 <b>NonPaged</b> (" + fmtBytes(a.kernel_nonpaged_bytes) + ") + <b>Paged</b> (" + fmtBytes(a.kernel_paged_bytes) + ") 池，以及多进程共享映射代码段（估算共享工作集 " + fmtBytes(sharedWS) + "）。" +
+          body: "包含内核 <b>NonPaged</b> (" + fmtBytes(a.kernel_nonpaged_bytes) + ") + <b>Paged</b> (" + fmtBytes(a.kernel_paged_bytes) + ") 池、系统文件缓存 (" + fmtBytes(a.system_cache_bytes || 0) + ") 与多进程共享工作集 (" + fmtBytes(sharedWS) + ")；共享页与系统缓存可通过上方释压按钮安全回收。" +
             (topTags ? ("<br/>非分页内核池前二标签：" + topTags) : "")
         };
       }
@@ -2808,32 +2818,58 @@ const dashboardHTML = `<!doctype html>
           return (t.tag === "cckT" && hasLnv) || (hasLnv && hasSysdiag);
         });
 
+        const mitigated = !!(deep.conflict_mitigated);
+        const svcChips = (deep.conflict_services || [])
+          .filter(s => s && s.exists)
+          .map(s => {
+            const st = s.running ? "运行中" : ("已停止(" + esc(s.start_type || "--") + ")");
+            return "<code>" + esc(s.name) + ": " + st + "</code>";
+          })
+          .join(" ");
+
         const leakers = deep.handle_leakers || [];
         const leakerStr = leakers.map(g => esc(g.name) + " (" + (g.handles || 0) + " 句柄)").join("、");
         const extraDiag = [];
-        if (hasDualHuorong) {
+        if (hasDualHuorong && mitigated) {
+          extraDiag.push("<b>冲突驱动已阻断</b>：联想冲突驱动与宿主服务当前处于停止/禁用状态；下方高占用的历史内核 <code>EPROCESS</code> / 对象残留形成于阻断之前，用户态无法抹除，将在下次电脑重启后清零；");
+        } else if (hasDualHuorong) {
           extraDiag.push("<b>内核过滤驱动冲突 (cckT / 安全钩子)</b>：检测到联想内置安全驱动 (<code>lnvscenter.sys</code>) 与独立火绒驱动 (<code>sysdiag.sys</code>) 共存，极易在 Ring 0 导致进程退出引用计数未归零；");
         }
+        if (svcChips) {
+          extraDiag.push("<b>实时服务/驱动状态</b>：" + svcChips);
+        }
         if (leakerStr) {
-          extraDiag.push("<b>高句柄泄漏宿主</b>：" + leakerStr + "（单进程句柄数已超常规 8,000+ 基线）；");
+          extraDiag.push("<b>高句柄泄漏宿主</b>：" + leakerStr + "（单进程句柄数已超异常基线）；");
         }
         if (findings) {
           extraDiag.push("本机高占用内核池标签: " + findings);
         }
         const privTip = (isAdmin === false) ? "（若需提权将自动请求 UAC）" : "";
-        const fixBtn = (hasDualHuorong || leak.suspected)
-          ? '<button class="btn-sm btn-danger" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>一键阻断冲突驱动并重置宿主服务</span></button>'
-          : '<button class="btn-sm btn-danger" onclick="doSuppressStorms()">' + SVG.zap + '<span>立即压制高句柄泄漏宿主</span></button>';
+        let fixBtn = "";
+        if (mitigated) {
+          fixBtn = '<button class="btn-sm" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>再次校验并巩固冲突防护</span></button>';
+        } else if (hasDualHuorong || leak.suspected) {
+          fixBtn = '<button class="btn-sm btn-danger" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>一键阻断冲突驱动并重置宿主服务</span></button>';
+        } else {
+          fixBtn = '<button class="btn-sm btn-danger" onclick="doSuppressStorms()">' + SVG.zap + '<span>立即压制高句柄泄漏宿主</span></button>';
+        }
+
+        const boxCls = mitigated ? "alert-amber" : "alert-red";
+        const pillCls = mitigated ? "pill-amber" : "pill-red";
+        const titleTxt = mitigated ? "根因 1：冲突源头已阻断 · 历史内核残留待重启清零" : "根因 1：内核对象 / 句柄泄漏归因";
+        const descLine = mitigated
+          ? "    已开启开机自动静默压制；当前残留的 <b>" + (leak.process_objects || 0) + "</b> 个内核 Process 对象会在下次重启后释放。"
+          : "    当第三方驱动过滤钩子在 Ring 0 未正确释放引用计数或后台进程疯狂泄漏句柄时，已退出的 EPROCESS / 内核池无法被用户态强行抹除，需阻断源头并择机重启清理" + privTip + "。";
 
         cards.push([
-          '<div class="alert-box spot-surface spot-sm alert-red">',
+          '<div class="alert-box spot-surface spot-sm ' + boxCls + '">',
           '  <div class="alert-title">',
-          '    <span class="alert-title-l">' + SVG.alert + '<span>根因 1：内核对象 / 句柄泄漏归因</span></span>',
-          '    <span class="pill pill-red">' + fmtBytes(bd.zombie_leak_bytes) + '</span>',
+          '    <span class="alert-title-l">' + SVG.alert + '<span>' + titleTxt + '</span></span>',
+          '    <span class="pill ' + pillCls + '">' + fmtBytes(bd.zombie_leak_bytes) + '</span>',
           '  </div>',
           '  <div class="alert-body">',
           '    内核存活 Process 对象 <b>' + (leak.process_objects || 0) + '</b> 个 vs 真实活跃进程 <b>' + (leak.active_processes || a.process_count || 0) + '</b> 个（直连内核池 <b>' + fmtBytes(leak.related_pool_bytes) + '</b>）。<br/>',
-          '    当第三方驱动过滤钩子在 Ring 0 未正确释放引用计数或后台进程疯狂泄漏句柄时，已退出的 EPROCESS / 内核池无法被用户态强行抹除，需阻断源头并择机重启清理' + privTip + '。<br/>',
+          descLine + '<br/>',
           extraDiag.join("<br/>"),
           '  </div>',
           '  <div class="alert-actions">',
@@ -3224,22 +3260,72 @@ const dashboardHTML = `<!doctype html>
       }
     }
 
+    let extremeConfirmTimer = null;
+    let extremeArmed = false;
+
+    function formatOptimizeToast(r, isExtreme) {
+      const top = (r.targets || []).slice(0, 3).map(t => t.name + "(" + Math.round(t.reclaimed_mb) + "MB)").join("、");
+      const svcNote = (r.service_trimmed_count > 0) ? ("（含系统服务 " + r.service_trimmed_count + " 个）") : "";
+      const extNotes = [];
+      if (r.all_working_sets_emptied) extNotes.push("已全域清空 WS");
+      if (r.cache_trimmed) extNotes.push("已收敛文件缓存");
+      if (r.standby_purged) extNotes.push("已排空待机页");
+      const prefix = isExtreme ? "强力全域释压完成：" : "深度释压完成：";
+      return prefix +
+        "收紧 " + (r.trimmed_count || 0) + " 个工作集" + svcNote + " " + fmtMB(r.ws_shrunk_mb) +
+        "，可用物理内存净增 " + fmtMB(r.avail_gain_mb) +
+        "（耗时 " + (r.duration_ms || 0) + "ms" + (extNotes.length ? " · " + extNotes.join("、") : "") + "）" +
+        (top ? " · " + top : "");
+    }
+
     async function doOptimize() {
       const btn = document.getElementById("btn-optimize");
       const txt = document.getElementById("btn-opt-text");
       btn.disabled = true;
       if (txt) txt.textContent = "正在深度释压...";
       try {
-        const data = await api("/api/optimize", "POST", {});
+        const data = await api("/api/optimize", "POST", { extreme: false });
         renderState(data.state);
-        const r = data.result || {};
-        const top = (r.targets || []).slice(0, 3).map(t => t.name + "(" + Math.round(t.reclaimed_mb) + "MB)").join("、");
-        showToast("深度释压完成：收紧 " + (r.trimmed_count || 0) + " 个闲置进程工作集 " + fmtMB(r.ws_shrunk_mb) + "，可用物理内存净增 " + fmtMB(r.avail_gain_mb) + "（耗时 " + (r.duration_ms || 0) + "ms）" + (top ? " · " + top : ""), 6000);
+        showToast(formatOptimizeToast(data.result || {}, false), 6500);
       } catch (e) {
         showToast("深度释压失败: " + e.message);
       } finally {
         btn.disabled = false;
         if (txt) txt.textContent = "立即深度释压";
+      }
+    }
+
+    async function doOptimizeExtreme() {
+      const btn = document.getElementById("btn-optimize-extreme");
+      const txt = document.getElementById("btn-opt-ext-text");
+      if (!extremeArmed) {
+        extremeArmed = true;
+        if (btn) btn.classList.add("btn-confirm");
+        if (txt) txt.textContent = "再次点击确认全域清空（短暂换页）";
+        clearTimeout(extremeConfirmTimer);
+        extremeConfirmTimer = setTimeout(() => {
+          extremeArmed = false;
+          if (btn) btn.classList.remove("btn-confirm");
+          if (txt) txt.textContent = "强力全域释压（含服务与缓存）";
+        }, 4000);
+        return;
+      }
+      extremeArmed = false;
+      clearTimeout(extremeConfirmTimer);
+      if (btn) {
+        btn.classList.remove("btn-confirm");
+        btn.disabled = true;
+      }
+      if (txt) txt.textContent = "正在全域深度清空...";
+      try {
+        const data = await api("/api/optimize", "POST", { extreme: true });
+        renderState(data.state);
+        showToast(formatOptimizeToast(data.result || {}, true), 7500);
+      } catch (e) {
+        showToast("强力全域释压失败: " + e.message);
+      } finally {
+        if (btn) btn.disabled = false;
+        if (txt) txt.textContent = "强力全域释压（含服务与缓存）";
       }
     }
 
@@ -3277,13 +3363,22 @@ const dashboardHTML = `<!doctype html>
     }
 
     async function doFixKernelLeak() {
-      showToast("正在卸载冲突驱动、关闭关联宿主并开启每次开机自动防护（若弹出 UAC 请允许）...", 5000);
+      const btn = document.getElementById("btn-fix-kernel-leak");
+      if (btn) {
+        btn.disabled = true;
+        const span = btn.querySelector("span");
+        if (span) span.textContent = "正在停止宿主与卸载冲突驱动...";
+      }
+      showToast("正在停止关联宿主并卸载冲突驱动、写入重启防护（若弹出 UAC 请允许）...", 5000);
       try {
         const data = await api("/api/fix-kernel-leak", "POST", {});
         renderState(data.state);
-        showToast(data.message || (data.ok ? "已完成冲突驱动卸载与持久防护" : "修复未完全完成"), 7000);
+        showToast(data.message || (data.ok ? "已完成冲突驱动卸载与持久防护" : "修复未完全完成"), 8500);
       } catch (e) {
-        showToast("冲突修复请求失败: " + e.message, 5500);
+        showToast("冲突修复请求失败: " + e.message, 6000);
+      } finally {
+        const b2 = document.getElementById("btn-fix-kernel-leak");
+        if (b2) b2.disabled = false;
       }
     }
 
