@@ -1214,8 +1214,8 @@ const dashboardHTML = `<!doctype html>
       background: linear-gradient(90deg, rgba(255, 245, 245, 0.92), rgba(255, 255, 255, 0.85) 35%);
     }
     .proc-avatar {
-      width: 30px;
-      height: 30px;
+      width: 32px;
+      height: 32px;
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -1223,15 +1223,47 @@ const dashboardHTML = `<!doctype html>
       font-weight: 800;
       font-size: 12px;
       flex-shrink: 0;
-      background: #eff6ff;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
       color: #1d4ed8;
       overflow: hidden;
+      position: relative;
     }
     .proc-avatar img {
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       object-fit: contain;
       display: block;
+    }
+    .proc-avatar-fallback {
+      display: none;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+      justify-content: center;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    .proc-row.is-storm .proc-avatar {
+      border-color: #fca5a5;
+    }
+    .proc-row.is-storm .proc-avatar-fallback {
+      background: #fee2e2;
+      color: #dc2626;
+    }
+    .mini-proc-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      vertical-align: middle;
+    }
+    .mini-proc-ico {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+      border-radius: 3px;
+      flex-shrink: 0;
+      display: inline-block;
     }
     .whitelist-bar {
       display: flex;
@@ -1276,7 +1308,6 @@ const dashboardHTML = `<!doctype html>
       line-height: 1;
     }
     .wl-chip button:hover { color: #dc2626; }
-    .proc-row.is-storm .proc-avatar { background: #fee2e2; color: #dc2626; }
     .proc-main { flex: 1; min-width: 0; }
     .proc-name-line {
       display: flex;
@@ -2907,7 +2938,7 @@ const dashboardHTML = `<!doctype html>
         const isHighMulti = (a.in_use_pct || 0) >= 72 || multiTotal >= 4096 * 1048576;
         if (isHighMulti) alertCount++;
         const topClusters = multiClusters.slice(0, 4)
-          .map(g => esc(g.name) + "×" + g.count + " (" + fmtBytes(g.private_ws_bytes) + ")")
+          .map(g => '<span class="mini-proc-cell">' + miniProcIconHTML(0, g.name) + '<b>' + esc(g.name) + '</b></span>×' + g.count + " (" + fmtBytes(g.private_ws_bytes) + ")")
           .join("、");
         cards.push([
           '<div class="alert-box spot-surface spot-sm ' + (isHighMulti ? 'alert-amber' : '') + '" style="' + (isHighMulti ? '' : 'border-color:#bfdbfe;background:#f8fafc') + '">',
@@ -2985,6 +3016,15 @@ const dashboardHTML = `<!doctype html>
       ).join("");
     }
 
+    function procIconURL(pid, name) {
+      return "/api/proc-icon?v=2&pid=" + encodeURIComponent(pid || 0) + "&name=" + encodeURIComponent(name || "") + "&token=" + encodeURIComponent(TOKEN);
+    }
+
+    function miniProcIconHTML(pid, name) {
+      if (!name || name === "已退出") return "";
+      return '<img class="mini-proc-ico" loading="lazy" decoding="async" src="' + procIconURL(pid, name) + '" alt="" onerror="this.style.display=\'none\'" />';
+    }
+
     function renderSpawners(list, stormList) {
       const tb = document.getElementById("tbl-spawners");
       const inRoster = {};
@@ -3001,7 +3041,8 @@ const dashboardHTML = `<!doctype html>
         const opBtn = inRoster[lowName]
           ? '<span class="card-sub">已在名单</span>'
           : '<button class="btn-sm" style="padding:2px 7px;font-size:11px" onclick="addStormName(\'' + esc(sp.name).replace(/'/g, "\\'") + '\')">+ 名单</button>';
-        return '<tr class="hover-row"><td>' + sp.pid + '</td><td><b>' + esc(sp.name || "已退出") + '</b></td><td class="num">' + sp.child_count + ' 次</td><td>' + badge + '</td><td class="num">' + opBtn + '</td></tr>';
+        const ico = miniProcIconHTML(sp.pid, sp.name);
+        return '<tr class="hover-row"><td>' + sp.pid + '</td><td><span class="mini-proc-cell">' + ico + '<b>' + esc(sp.name || "已退出") + '</b></span></td><td class="num">' + sp.child_count + ' 次</td><td>' + badge + '</td><td class="num">' + opBtn + '</td></tr>';
       }).join("");
     }
 
@@ -3063,11 +3104,11 @@ const dashboardHTML = `<!doctype html>
         const addBtn = inRoster[lowName]
           ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">自动名单内</span>'
           : '<button class="btn-sm" style="padding:2px 6px;font-size:11px" onclick="addStormName(\'' + escapedName + '\')">+ 压制</button>';
-        const iconSrc = "/api/proc-icon?pid=" + encodeURIComponent(p.pid) + "&name=" + encodeURIComponent(p.name || "") + "&token=" + encodeURIComponent(TOKEN);
+        const iconSrc = procIconURL(p.pid, p.name);
 
         return [
           '<div class="proc-row' + (p.storm_throttled ? ' is-storm' : '') + '">',
-          '  <div class="proc-avatar"><img src="' + iconSrc + '" alt="" onerror="this.replaceWith(document.createTextNode(\'' + initial.replace(/'/g, "\\'") + '\'))" /></div>',
+          '  <div class="proc-avatar"><img decoding="async" src="' + iconSrc + '" alt="" onerror="this.style.display=\'none\';if(this.nextElementSibling)this.nextElementSibling.style.display=\'flex\'" /><span class="proc-avatar-fallback">' + initial + '</span></div>',
           '  <div class="proc-main">',
           '    <div class="proc-name-line">',
           '      <span class="proc-name" title="' + esc(p.name) + '">' + esc(p.name) + '</span>',
@@ -3150,7 +3191,7 @@ const dashboardHTML = `<!doctype html>
         const strat = c.adaptive_cooldown
           ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">防反扑软抑</span>'
           : '<span class="pill pill-blue" style="padding:1px 6px;font-size:11px">分级收紧</span>';
-        return '<tr class="hover-row"><td><b>' + esc(c.name) + '</b></td><td class="num">' + (c.hits || 0) + ' 次</td><td class="num">' + fmtMB(c.max_ws_mb || 0) + '</td><td class="num">' + fmtMB(c.reclaimed_mb || 0) + '</td><td>' + strat + '</td></tr>';
+        return '<tr class="hover-row"><td><span class="mini-proc-cell">' + miniProcIconHTML(0, c.name) + '<b>' + esc(c.name) + '</b></span></td><td class="num">' + (c.hits || 0) + ' 次</td><td class="num">' + fmtMB(c.max_ws_mb || 0) + '</td><td class="num">' + fmtMB(c.reclaimed_mb || 0) + '</td><td>' + strat + '</td></tr>';
       }).join("");
     }
 
