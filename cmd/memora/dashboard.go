@@ -451,7 +451,11 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 
 func (d *dashboardServer) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Memora-Token") != d.token {
+		tok := r.Header.Get("X-Memora-Token")
+		if tok == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			tok = r.URL.Query().Get("token")
+		}
+		if tok != d.token {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

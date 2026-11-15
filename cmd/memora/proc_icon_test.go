@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,5 +105,43 @@ func TestResolveProcessIconForWeChatHelperIfInstalled(t *testing.T) {
 	}
 	if cfg.Width < 16 || cfg.Height < 16 {
 		t.Fatalf("unexpected WeChat icon dimensions: %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
+func TestHandleProcIconAuthAndPNGResponse(t *testing.T) {
+	srv := &dashboardServer{token: "test-token-123"}
+	handler := srv.withAuth(srv.handleProcIcon)
+
+	// Missing token must stay 403.
+	reqNoTok := httptest.NewRequest(http.MethodGet, "/api/proc-icon?name=notepad.exe", nil)
+	recNoTok := httptest.NewRecorder()
+	handler(recNoTok, reqNoTok)
+	if recNoTok.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without token, got %d", recNoTok.Code)
+	}
+
+	// Query ?token=... used by <img src="..."> must succeed when a valid icon exists.
+	rememberNamePath("notepad.exe", filepath.Join(os.Getenv("SystemRoot"), "System32", "notepad.exe"))
+	reqOK := httptest.NewRequest(http.MethodGet, "/api/proc-icon?v=2&pid=0&name=notepad.exe&token=test-token-123", nil)
+	recOK := httptest.NewRecorder()
+	handler(recOK, reqOK)
+	if recOK.Code != http.StatusOK {
+		t.Fatalf("expected 200 with query token for <img>, got %d (%s)", recOK.Code, recOK.Body.String())
+	}
+	if ct := recOK.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("expected image/png Content-Type, got %q", ct)
+	}
+	if _, err := png.DecodeConfig(bytes.NewReader(recOK.Body.Bytes())); err != nil {
+		t.Fatalf("response body is not valid PNG: %v", err)
+	}
+
+	// Live WeChatAppEx.exe icon resolution check if Weixin is installed.
+	if wPng := resolveProcessIconPNG(0, "WeChatAppEx.exe"); len(wPng) > 0 {
+		reqWX := httptest.NewRequest(http.MethodGet, "/api/proc-icon?v=2&pid=0&name=WeChatAppEx.exe&token=test-token-123", nil)
+		recWX := httptest.NewRecorder()
+		handler(recWX, reqWX)
+		if recWX.Code != http.StatusOK {
+			t.Fatalf("expected 200 for WeChatAppEx.exe icon, got %d", recWX.Code)
+		}
 	}
 }
