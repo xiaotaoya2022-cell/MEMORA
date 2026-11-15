@@ -3,6 +3,7 @@ package winmem
 import (
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -20,6 +21,15 @@ var (
 	procPdhCollectQueryData         = pdh.NewProc("PdhCollectQueryData")
 	procPdhGetFormattedCounterArray = pdh.NewProc("PdhGetFormattedCounterArrayW")
 	procPdhCloseQuery               = pdh.NewProc("PdhCloseQuery")
+
+	pdhMu       sync.Mutex
+	pdhQuery    uintptr
+	pdhVid      uintptr
+	pdhNumaAv   uintptr
+	pdhNumaTot  uintptr
+	pdhHasVid   bool
+	pdhHasAvail bool
+	pdhHasTotal bool
 )
 
 type pdhFmtCounterValueItem struct {
@@ -51,27 +61,26 @@ func ReadSystemExtras(pageSize uint64) SystemExtras {
 	if pageSize == 0 {
 		pageSize = 4096
 	}
-	var query uintptr
-	st, _, _ := procPdhOpenQueryW.Call(0, 0, uintptr(unsafe.Pointer(&query)))
-	if st != 0 || query == 0 {
+	pdhMu.Lock()
+	defer pdhMu.Unlock()
+
+	if !ensurePDHQueryLocked() {
 		return SystemExtras{}
 	}
-	defer procPdhCloseQuery.Call(query)
-
-	cVid, okVid := addEnglishCounter(query, `\Hyper-V VM Vid Partition(_total)\Physical Pages Allocated`)
-	cNumaAvail, okAvail := addEnglishCounter(query, `\NUMA Node Memory(*)\Available MBytes`)
-	cNumaTotal, okTotal := addEnglishCounter(query, `\NUMA Node Memory(*)\Total MBytes`)
-	if !okVid && !okAvail && !okTotal {
-		return SystemExtras{}
-	}
-
-	if st, _, _ := procPdhCollectQueryData.Call(query); st != 0 {
-		return SystemExtras{}
+	if st, _, _ := procPdhCollectQueryData.Call(pdhQuery); st != 0 {
+		closePDHQueryLocked()
+		if !ensurePDHQueryLocked() {
+			return SystemExtras{}
+		}
+		if st2, _, _ := procPdhCollectQueryData.Call(pdhQuery); st2 != 0 {
+			closePDHQueryLocked()
+			return SystemExtras{}
+		}
 	}
 
 	var out SystemExtras
-	if okVid {
-		if items, ok := readCounterLargeArray(cVid); ok {
+	if pdhHasVid {
+		if items, ok := readCounterLargeArray(pdhVid); ok {
 			for _, it := range items {
 				if strings.EqualFold(it.name, "_total") && it.val >= 0 {
 					out.VidBytes = uint64(it.val) * pageSize
@@ -82,11 +91,11 @@ func ReadSystemExtras(pageSize uint64) SystemExtras {
 		}
 	}
 
-	if okAvail {
-		availItems, okA := readCounterLargeArray(cNumaAvail)
+	if pdhHasAvail {
+		availItems, okA := readCounterLargeArray(pdhNumaAv)
 		totalMap := map[string]uint64{}
-		if okTotal {
-			if totalItems, okT := readCounterLargeArray(cNumaTotal); okT {
+		if pdhHasTotal {
+			if totalItems, okT := readCounterLargeArray(pdhNumaTot); okT {
 				for _, it := range totalItems {
 					if it.val >= 0 {
 						totalMap[it.name] = uint64(it.val)
@@ -113,6 +122,37 @@ func ReadSystemExtras(pageSize uint64) SystemExtras {
 	}
 
 	return out
+}
+
+func ensurePDHQueryLocked() bool {
+	if pdhQuery != 0 {
+		return true
+	}
+	var query uintptr
+	st, _, _ := procPdhOpenQueryW.Call(0, 0, uintptr(unsafe.Pointer(&query)))
+	if st != 0 || query == 0 {
+		return false
+	}
+	cVid, okVid := addEnglishCounter(query, `\Hyper-V VM Vid Partition(_total)\Physical Pages Allocated`)
+	cNumaAvail, okAvail := addEnglishCounter(query, `\NUMA Node Memory(*)\Available MBytes`)
+	cNumaTotal, okTotal := addEnglishCounter(query, `\NUMA Node Memory(*)\Total MBytes`)
+	if !okVid && !okAvail && !okTotal {
+		_, _, _ = procPdhCloseQuery.Call(query)
+		return false
+	}
+	pdhQuery = query
+	pdhVid, pdhHasVid = cVid, okVid
+	pdhNumaAv, pdhHasAvail = cNumaAvail, okAvail
+	pdhNumaTot, pdhHasTotal = cNumaTotal, okTotal
+	return true
+}
+
+func closePDHQueryLocked() {
+	if pdhQuery != 0 {
+		_, _, _ = procPdhCloseQuery.Call(pdhQuery)
+	}
+	pdhQuery, pdhVid, pdhNumaAv, pdhNumaTot = 0, 0, 0, 0
+	pdhHasVid, pdhHasAvail, pdhHasTotal = false, false, false
 }
 
 func addEnglishCounter(query uintptr, path string) (uintptr, bool) {

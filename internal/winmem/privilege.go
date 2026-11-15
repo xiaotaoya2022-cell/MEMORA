@@ -10,6 +10,7 @@ var (
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
 
 	procOpenProcessToken      = advapi32.NewProc("OpenProcessToken")
+	procGetTokenInformation   = advapi32.NewProc("GetTokenInformation")
 	procLookupPrivilegeValue  = advapi32.NewProc("LookupPrivilegeValueW")
 	procAdjustTokenPrivileges = advapi32.NewProc("AdjustTokenPrivileges")
 	procGetCurrentProcess     = kernel32.NewProc("GetCurrentProcess")
@@ -18,9 +19,50 @@ var (
 const (
 	tokenAdjustPrivileges = 0x0020
 	tokenQuery            = 0x0008
+	tokenElevationClass   = 20
 	sePrivilegeEnabled    = 0x0002
 	errorNotAllAssigned   = 1300
 )
+
+type tokenElevation struct {
+	TokenIsElevated uint32
+}
+
+// IsAdmin reports whether the current process holds an elevated administrator token.
+func IsAdmin() bool {
+	r, _, _ := procGetCurrentProcess.Call()
+	if r == 0 {
+		return false
+	}
+	var token syscall.Handle
+	ok, _, _ := procOpenProcessToken.Call(r, uintptr(tokenQuery), uintptr(unsafe.Pointer(&token)))
+	if ok == 0 {
+		return false
+	}
+	defer syscall.CloseHandle(token)
+
+	var elev tokenElevation
+	var retLen uint32
+	ok, _, _ = procGetTokenInformation.Call(
+		uintptr(token),
+		uintptr(tokenElevationClass),
+		uintptr(unsafe.Pointer(&elev)),
+		uintptr(unsafe.Sizeof(elev)),
+		uintptr(unsafe.Pointer(&retLen)),
+	)
+	if ok == 0 {
+		return false
+	}
+	return elev.TokenIsElevated != 0
+}
+
+// EnableGuardianPrivileges attempts to enable SeDebugPrivilege and
+// SeProfileSingleProcessPrivilege so cross-process inspection and standby/modified
+// list management succeed when running elevated. Errors are ignored gracefully when unelevated.
+func EnableGuardianPrivileges() {
+	_ = EnablePrivilege("SeDebugPrivilege")
+	_ = EnablePrivilege("SeProfileSingleProcessPrivilege")
+}
 
 type luid struct {
 	LowPart  uint32

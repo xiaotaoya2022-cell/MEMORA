@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	systemModuleInformation  = 11
-	systemPoolTagInformation = 0x16
-	objectTypesInformation   = 3
-	statusInfoLengthMismatch = 0xC0000004
+	systemModuleInformation         = 11
+	systemPoolTagInformation        = 0x16
+	systemExtendedHandleInformation = 64
+	objectTypesInformation          = 3
+	statusInfoLengthMismatch        = 0xC0000004
 )
 
 var (
@@ -452,4 +453,113 @@ func DescribePoolTag(tag string) string {
 	default:
 		return ""
 	}
+}
+
+type systemHandleTableEntryInfoEx struct {
+	Object                uintptr
+	UniqueProcessId       uintptr
+	HandleValue           uintptr
+	GrantedAccess         uint32
+	CreatorBackTraceIndex uint16
+	ObjectTypeIndex       uint16
+	HandleAttributes      uint32
+	Reserved              uint32
+}
+
+// ProcessHandleHolder summarizes how many Process-type kernel handles a PID owns.
+type ProcessHandleHolder struct {
+	PID           uint32 `json:"pid"`
+	ProcessHandle uint32 `json:"process_handles"`
+}
+
+// ReadProcessHandleHolders queries SystemExtendedHandleInformation to count
+// Process-type handles per owning PID, identifying who is keeping dead EPROCESS
+// objects alive.
+func ReadProcessHandleHolders(minCount uint32) ([]ProcessHandleHolder, error) {
+	// Duplicate our own process pseudo-handle to obtain a real Process handle
+	// whose ObjectTypeIndex can be matched unambiguously in the handle table.
+	selfPseudo, _, _ := procGetCurrentProcess.Call()
+	var probeHandle syscall.Handle
+	curProc := syscall.Handle(selfPseudo)
+	if err := syscall.DuplicateHandle(curProc, curProc, curProc, &probeHandle, 0, false, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+		return nil, err
+	}
+	defer syscall.CloseHandle(probeHandle)
+
+	size := 4 << 20
+	var buf []byte
+	var ret uint32
+	found := false
+	for attempt := 0; attempt < 6; attempt++ {
+		buf = make([]byte, size)
+		status, _, _ := procNtQuerySystemInformation.Call(
+			uintptr(systemExtendedHandleInformation),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(len(buf)),
+			uintptr(unsafe.Pointer(&ret)),
+		)
+		if uint32(int32(status)) == statusInfoLengthMismatch {
+			if int(ret) > size {
+				size = int(ret) + (1 << 20)
+			} else {
+				size *= 2
+			}
+			continue
+		}
+		if int32(status) < 0 {
+			return nil, fmt.Errorf("NtQuerySystemInformation(ExtendedHandle): NTSTATUS 0x%08X", uint32(int32(status)))
+		}
+		found = true
+		break
+	}
+	if !found {
+		return nil, fmt.Errorf("NtQuerySystemInformation(ExtendedHandle): buffer exhausted")
+	}
+
+	ptrSize := int(unsafe.Sizeof(uintptr(0)))
+	headerSize := ptrSize * 2
+	itemSize := int(unsafe.Sizeof(systemHandleTableEntryInfoEx{}))
+	if len(buf) < headerSize {
+		return nil, nil
+	}
+	count := int(*(*uintptr)(unsafe.Pointer(&buf[0])))
+	maxCount := (len(buf) - headerSize) / itemSize
+	if count > maxCount {
+		count = maxCount
+	}
+
+	selfPID := uintptr(os.Getpid())
+	probeVal := uintptr(probeHandle)
+	var procTypeIdx uint16
+	hasType := false
+	for i := 0; i < count; i++ {
+		e := (*systemHandleTableEntryInfoEx)(unsafe.Pointer(&buf[headerSize+i*itemSize]))
+		if e.UniqueProcessId == selfPID && e.HandleValue == probeVal {
+			procTypeIdx = e.ObjectTypeIndex
+			hasType = true
+			break
+		}
+	}
+	if !hasType {
+		return nil, fmt.Errorf("process object type index not found")
+	}
+
+	counts := make(map[uint32]uint32, 64)
+	for i := 0; i < count; i++ {
+		e := (*systemHandleTableEntryInfoEx)(unsafe.Pointer(&buf[headerSize+i*itemSize]))
+		if e.ObjectTypeIndex == procTypeIdx {
+			counts[uint32(e.UniqueProcessId)]++
+		}
+	}
+
+	out := make([]ProcessHandleHolder, 0, len(counts))
+	for pid, cnt := range counts {
+		if cnt >= minCount {
+			out = append(out, ProcessHandleHolder{
+				PID:           pid,
+				ProcessHandle: cnt,
+			})
+		}
+	}
+	return out, nil
 }

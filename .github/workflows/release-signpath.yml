@@ -1,0 +1,160 @@
+name: CI & SignPath Signed Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Run SignPath signing and publish GitHub Release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      artifact_id: ${{ steps.upload-app.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Detect version
+        id: ver
+        shell: pwsh
+        run: |
+          $mainGo = Get-Content cmd\memora\main.go -Raw
+          if ($mainGo -match 'const\s+version\s*=\s*"([^"]+)"') {
+            "version=$($Matches[1])" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            throw "Version not found in cmd\memora\main.go"
+          }
+
+      - name: Vet and Test
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: Build unsigned memora.exe
+        shell: pwsh
+        run: |
+          .\build.ps1 -SkipSign -SkipTests
+
+      - name: Upload unsigned memora.exe for SignPath
+        id: upload-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-memora-exe
+          path: bin/memora.exe
+          if-no-files-found: error
+
+  sign-app:
+    needs: test-and-build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit memora.exe signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'memora' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ needs.test-and-build.outputs.artifact_id }}
+          wait-for-completion: true
+          output-artifact-directory: './signed-app'
+
+      - name: Upload SignPath-signed memora.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-memora-exe
+          path: ./signed-app/memora.exe
+          if-no-files-found: error
+
+  build-installer:
+    needs: [ test-and-build, sign-app ]
+    runs-on: windows-latest
+    outputs:
+      artifact_id: ${{ steps.upload-setup.outputs.artifact-id }}
+      setup_name: memora-v${{ needs.test-and-build.outputs.version }}-windows-amd64-setup.exe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Download SignPath-signed memora.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-memora-exe
+          path: bin
+
+      - name: Package NSIS installer (unsigned wrapper around signed memora.exe)
+        shell: pwsh
+        run: |
+          .\packaging\windows\build-installer.ps1 -Version "${{ needs.test-and-build.outputs.version }}" -SkipTests -SkipSign -SkipBuild
+
+      - name: Upload unsigned installer for SignPath
+        id: upload-setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: bin/release/memora-v${{ needs.test-and-build.outputs.version }}-windows-amd64-setup.exe
+          if-no-files-found: error
+
+  sign-and-release:
+    needs: [ test-and-build, build-installer ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit installer signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'memora' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ needs.build-installer.outputs.artifact_id }}
+          wait-for-completion: true
+          output-artifact-directory: './signed-release'
+
+      - name: Download SignPath-signed memora.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-memora-exe
+          path: ./signed-release
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd ./signed-release
+          sha256sum "${{ needs.build-installer.outputs.setup_name }}" memora.exe > "SHA256SUMS-v${{ needs.test-and-build.outputs.version }}.txt"
+          cat "SHA256SUMS-v${{ needs.test-and-build.outputs.version }}.txt"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./signed-release/${{ needs.build-installer.outputs.setup_name }}
+            ./signed-release/memora.exe
+            ./signed-release/SHA256SUMS-v${{ needs.test-and-build.outputs.version }}.txt
+          generate_release_notes: true

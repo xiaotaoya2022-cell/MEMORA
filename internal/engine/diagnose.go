@@ -3,6 +3,8 @@ package engine
 import (
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"memora/internal/proc"
 	"memora/internal/winmem"
@@ -50,18 +52,27 @@ type PoolFinding struct {
 	Drivers []string `json:"drivers,omitempty"`
 }
 
+// ProcessHandleLeaker identifies a specific PID holding excessive Process-type handles.
+type ProcessHandleLeaker struct {
+	PID            uint32 `json:"pid"`
+	Name           string `json:"name"`
+	ProcessHandles uint32 `json:"process_handles"`
+}
+
 // DeepDiagnosis holds kernel, virtualization, NUMA, and aggregated process findings.
 type DeepDiagnosis struct {
-	Extras          winmem.SystemExtras     `json:"extras"`
-	HasObjectTypes  bool                    `json:"has_object_types"`
-	ObjectTypes     []winmem.ObjectTypeStat `json:"object_types,omitempty"`
-	HasPoolTags     bool                    `json:"has_pool_tags"`
-	PoolTags        []winmem.PoolTag        `json:"-"`
-	Leak            KernelLeakSummary       `json:"kernel_leak"`
-	TopNonPagedTags []PoolFinding           `json:"top_nonpaged_tags,omitempty"`
-	TopPagedTags    []PoolFinding           `json:"top_paged_tags,omitempty"`
-	ProcGroups      []ProcGroup             `json:"proc_groups,omitempty"`
-	DriversScanned  bool                    `json:"drivers_scanned"`
+	Extras               winmem.SystemExtras     `json:"extras"`
+	HasObjectTypes       bool                    `json:"has_object_types"`
+	ObjectTypes          []winmem.ObjectTypeStat `json:"object_types,omitempty"`
+	HasPoolTags          bool                    `json:"has_pool_tags"`
+	PoolTags             []winmem.PoolTag        `json:"-"`
+	Leak                 KernelLeakSummary       `json:"kernel_leak"`
+	ProcessHandleHolders []ProcessHandleLeaker   `json:"process_handle_holders,omitempty"`
+	TopNonPagedTags      []PoolFinding           `json:"top_nonpaged_tags,omitempty"`
+	TopPagedTags         []PoolFinding           `json:"top_paged_tags,omitempty"`
+	ProcGroups           []ProcGroup             `json:"proc_groups,omitempty"`
+	HandleLeakers        []ProcGroup             `json:"handle_leakers,omitempty"`
+	DriversScanned       bool                    `json:"drivers_scanned"`
 }
 
 // GroupProcesses aggregates processes by case-insensitive image name, sorted by Private bytes desc.
@@ -134,23 +145,66 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 		populateLeakTags(&d.Leak, tags)
 	}
 
+	d.HandleLeakers = findHandleLeakers(d.ProcGroups)
+
 	d.Leak.Suspected = isProcessObjectLeakSuspected(d.Leak)
 
-	if matchDrivers && d.HasPoolTags {
-		d.DriversScanned = true
-		attachDriverMatches(&d)
+	if d.Leak.Suspected {
+		if holders, err := winmem.ReadProcessHandleHolders(200); err == nil && len(holders) > 0 {
+			nameByPID := make(map[uint32]string, len(procs))
+			for _, p := range procs {
+				nameByPID[p.PID] = p.Name
+			}
+			for _, h := range holders {
+				nm := nameByPID[h.PID]
+				if nm == "" && h.PID == 4 {
+					nm = "System"
+				}
+				d.ProcessHandleHolders = append(d.ProcessHandleHolders, ProcessHandleLeaker{
+					PID:            h.PID,
+					Name:           nm,
+					ProcessHandles: h.ProcessHandle,
+				})
+			}
+			sort.Slice(d.ProcessHandleHolders, func(i, j int) bool {
+				return d.ProcessHandleHolders[i].ProcessHandles > d.ProcessHandleHolders[j].ProcessHandles
+			})
+			if len(d.ProcessHandleHolders) > 10 {
+				d.ProcessHandleHolders = d.ProcessHandleHolders[:10]
+			}
+		}
+	}
+
+	if d.HasPoolTags {
+		attachDriverMatches(&d, matchDrivers)
 	}
 
 	return d
 }
 
+func findHandleLeakers(groups []ProcGroup) []ProcGroup {
+	var out []ProcGroup
+	for _, g := range groups {
+		if !strings.EqualFold(g.Name, "System") && g.Count <= 3 && g.Handles >= 8000 {
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Handles > out[j].Handles
+	})
+	return out
+}
+
 func isProcessObjectLeakSuspected(l KernelLeakSummary) bool {
 	if l.ProcessObjects >= 500 && l.ActiveProcesses > 0 {
-		if int(l.ProcessObjects) > l.ActiveProcesses*3 && l.ProcessObjects > l.ProcessHandles*3 {
+		excess := int(l.ProcessObjects) - l.ActiveProcesses
+		if int(l.ProcessObjects) > l.ActiveProcesses*3 &&
+			l.ProcessObjects > l.ProcessHandles*3 &&
+			(excess >= 10000 || l.RelatedPoolByte >= 256<<20) {
 			return true
 		}
 	}
-	if l.ProcTagAllocs >= 500 && l.ProcTagAllocs > l.ProcTagFrees*10 && int(l.ProcTagAllocs-l.ProcTagFrees) > l.ActiveProcesses*3 {
+	if l.ProcTagAllocs >= 500 && l.ProcTagAllocs >= l.ProcTagFrees && l.ProcTagAllocs > l.ProcTagFrees*10 && int(l.ProcTagAllocs-l.ProcTagFrees) >= 10000 && int(l.ProcTagAllocs-l.ProcTagFrees) > l.ActiveProcesses*3 {
 		return true
 	}
 	return false
@@ -174,11 +228,19 @@ func buildPoolFindings(tags []winmem.PoolTag) (nonpaged []PoolFinding, paged []P
 	npSorted := make([]winmem.PoolTag, len(tags))
 	copy(npSorted, tags)
 	sort.Slice(npSorted, func(i, j int) bool { return npSorted[i].NonPagedUsed > npSorted[j].NonPagedUsed })
-	for i := 0; i < len(npSorted) && i < 10; i++ {
+	seenNP := map[string]bool{}
+	for i := 0; i < len(npSorted); i++ {
 		pt := npSorted[i]
 		if pt.NonPagedUsed < 8<<20 {
 			break
 		}
+		if len(nonpaged) >= 12 && pt.NonPagedActive() < 100000 {
+			continue
+		}
+		if seenNP[pt.Tag] {
+			continue
+		}
+		seenNP[pt.Tag] = true
 		nonpaged = append(nonpaged, PoolFinding{
 			Tag:    pt.Tag,
 			Pool:   "nonpaged",
@@ -211,12 +273,24 @@ func buildPoolFindings(tags []winmem.PoolTag) (nonpaged []PoolFinding, paged []P
 	return nonpaged, paged
 }
 
-func attachDriverMatches(d *DeepDiagnosis) {
-	drivers, err := winmem.ListDrivers()
-	if err != nil || len(drivers) == 0 {
-		return
-	}
+var (
+	driverCacheMu    sync.Mutex
+	cachedDrivers    []winmem.DriverModule
+	cachedTagMatches = map[string][]string{}
+	cachedDriversAt  time.Time
+)
 
+// ResetDriverScanCache clears cached loaded-driver / pool-tag associations so the
+// next deep inspection rescans live kernel modules immediately.
+func ResetDriverScanCache() {
+	driverCacheMu.Lock()
+	cachedDrivers = nil
+	cachedTagMatches = map[string][]string{}
+	cachedDriversAt = time.Time{}
+	driverCacheMu.Unlock()
+}
+
+func attachDriverMatches(d *DeepDiagnosis, forceRefresh bool) {
 	tagSet := map[string]struct{}{}
 	var queryTags []string
 	addIfUnknown := func(f PoolFinding) {
@@ -238,18 +312,44 @@ func attachDriverMatches(d *DeepDiagnosis) {
 		return
 	}
 
+	driverCacheMu.Lock()
+	defer driverCacheMu.Unlock()
+
+	if forceRefresh || len(cachedDrivers) == 0 || time.Since(cachedDriversAt) >= 5*time.Minute {
+		drivers, err := winmem.ListDrivers()
+		if err != nil || len(drivers) == 0 {
+			return
+		}
+		cachedDrivers = drivers
+		cachedTagMatches = map[string][]string{}
+		cachedDriversAt = time.Now()
+	}
+
+	var missingTags []string
+	for _, tag := range queryTags {
+		if _, ok := cachedTagMatches[tag]; !ok {
+			missingTags = append(missingTags, tag)
+		}
+	}
+	if len(missingTags) > 0 {
+		newMatches := winmem.MatchPoolTagsToDrivers(missingTags, cachedDrivers)
+		for _, tag := range missingTags {
+			cachedTagMatches[tag] = newMatches[tag]
+		}
+	}
+
 	const maxMatchNoise = 6
-	matches := winmem.MatchPoolTagsToDrivers(queryTags, drivers)
 	for i := range d.TopNonPagedTags {
-		if ds := matches[d.TopNonPagedTags[i].Tag]; len(ds) > 0 && len(ds) <= maxMatchNoise {
+		if ds := cachedTagMatches[d.TopNonPagedTags[i].Tag]; len(ds) > 0 && len(ds) <= maxMatchNoise {
 			d.TopNonPagedTags[i].Drivers = ds
 		}
 	}
 	for i := range d.TopPagedTags {
-		if ds := matches[d.TopPagedTags[i].Tag]; len(ds) > 0 && len(ds) <= maxMatchNoise {
+		if ds := cachedTagMatches[d.TopPagedTags[i].Tag]; len(ds) > 0 && len(ds) <= maxMatchNoise {
 			d.TopPagedTags[i].Drivers = ds
 		}
 	}
+	d.DriversScanned = true
 }
 
 // NUMADisparity returns whether a system with multiple NUMA nodes has one node

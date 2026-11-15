@@ -19,34 +19,43 @@ import (
 	"memora/internal/config"
 	"memora/internal/engine"
 	"memora/internal/journal"
+	"memora/internal/ledger"
 	"memora/internal/proc"
 	"memora/internal/winmem"
 )
 
-const version = "0.1.0"
+const version = "0.3.0"
 
 const runKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		cmdTray([]string{"--hidden", "--open-ui"})
 		return
 	}
 	switch os.Args[1] {
+	case "ui", "dashboard":
+		cmdTray(append([]string{"--hidden", "--open-ui"}, os.Args[2:]...))
 	case "status":
 		cmdStatus(os.Args[2:])
 	case "watch":
 		cmdWatch(os.Args[2:])
+	case "tray":
+		cmdTray(os.Args[2:])
 	case "doctor":
 		cmdDoctor(os.Args[2:])
 	case "trace":
 		cmdTrace(os.Args[2:])
 	case "journal":
 		cmdJournal(os.Args[2:])
+	case "ledger":
+		cmdLedger(os.Args[2:])
 	case "config":
 		cmdConfig(os.Args[2:])
 	case "startup":
 		cmdStartup(os.Args[2:])
+	case "path":
+		cmdPath(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Print("memora " + version + "\n")
 	default:
@@ -58,22 +67,27 @@ func usage() {
 	fmt.Print(`MEMORA — Memory, Back to Its Nature.
 
 用法:
+  memora                             启动或唤醒系统托盘并打开控制与真相中心界面
+  memora ui                          启动或唤醒控制与真相中心界面
   memora status [--json] [--deep]    看一次当前状态（--deep 匹配驱动内核池标签）
   memora watch  [--observe] [--quiet] [--hidden] [--interval D] [--only-pid PID]
-                                     常驻监视；--observe 只记录不动手
+                                     后台静默守护；--observe 只记录不动手
+  memora tray   [--observe] [--hidden] [--open-ui]
+                                     以轻量原生系统托盘常驻（双击打开界面，右键看菜单）
   memora doctor [--minutes N] [--interval D]
                                      观察一段时间并给出归因结论
   memora trace  [--minutes N] [--interval D] [--out FILE]
                                      把采样写成 JSONL
+  memora ledger [--json] [--reset]   查看长期「静默账本」（守护时长/克制率/空载基线）
   memora journal [--lines N] [--path]
-                                     查看行为日志
+                                     查看动作审计日志
   memora config [--reset]            查看/重置配置
-  memora startup enable|disable|status
+  memora startup enable [--tray] | disable | status
   memora version
 
 说明:
-  watch 默认按配置运行；config.json 里的 mode 为 observe 时只记录不动作。
-  所有动作都会写进 journal，包含原因、前后数值与实测回收量。
+  watch 与 tray 默认按配置运行；config.json 里的 mode 为 observe 时只记录不动作。
+  所有动作都会写进 journal，包含原因、前后数值与实测回收量；全屏游戏自动静音护航。
 `)
 }
 
@@ -100,6 +114,10 @@ func cmdStatus(args []string) {
 	residual := int64(snap.Commit) - int64(private) - int64(snap.KernelPaged) - int64(snap.KernelNonpaged)
 	selfWS, selfHandles := selfStats(procs)
 	diag := engine.InspectDeep(snap, procs, *deep)
+	fgPID := proc.ForegroundPID()
+	family := proc.FamilyPIDs(procs, fgPID)
+	qState, qBusy := proc.IsFullscreenOrBusy()
+	qLabel := proc.NotificationStateLabel(qState)
 
 	if *asJSON {
 		groupLimit := 15
@@ -128,6 +146,10 @@ func cmdStatus(args []string) {
 			"vid_bytes":                 diag.Extras.VidBytes,
 			"numa_nodes":                diag.Extras.NUMANodes,
 			"kernel_leak":               diag.Leak,
+			"fullscreen_state":          qState,
+			"fullscreen_label":          qLabel,
+			"fullscreen_quiet":          qBusy,
+			"family_protected":          len(family),
 			"top_nonpaged_tags":         diag.TopNonPagedTags,
 			"top_paged_tags":            diag.TopPagedTags,
 			"top_process_groups":        diag.ProcGroups[:groupLimit],
@@ -182,6 +204,11 @@ func cmdStatus(args []string) {
 			fmt.Printf("           系统报告 %d 个进程，其中 %d 个无权限读取，未计入上面的合计\n",
 				snap.Processes, inaccessible)
 		}
+	}
+	if qBusy {
+		fmt.Printf("场景护航   %s（触发全屏静音免打扰，已锁定保护前景家族 %d 个进程）\n", qLabel, len(family))
+	} else {
+		fmt.Printf("场景护航   %s（前景家族 %d 个进程受免干涉保护）\n", qLabel, len(family))
 	}
 
 	label := "正常"
@@ -328,8 +355,12 @@ func cmdWatch(args []string) {
 		fail("打开日志失败: %v", err)
 	}
 	defer jr.Close()
+	lg, _ := ledger.Open(config.Dir())
 
 	eng := engine.New(cfg, jr)
+	if lg != nil {
+		eng.SetLedger(lg)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -349,7 +380,11 @@ func cmdWatch(args []string) {
 		shown = time.Duration(cfg.IntervalSeconds) * time.Second
 	}
 	if opts.Verbose {
-		fmt.Printf("MEMORA 守护中  模式=%s  间隔=%s  日志=%s\n", effective, shown, jr.Path())
+		ledgerPath := ""
+		if lg != nil {
+			ledgerPath = "  账本=" + lg.Path()
+		}
+		fmt.Printf("MEMORA %s 守护中  模式=%s  间隔=%s  日志=%s%s\n", version, effective, shown, jr.Path(), ledgerPath)
 	}
 	if err := eng.Run(ctx, opts); err != nil {
 		fail("%v", err)
@@ -380,12 +415,18 @@ func cmdDoctor(args []string) {
 	names := map[uint32]string{}
 	seenPIDs := map[uint32]struct{}{}
 	spawnByParent := map[string]int{}
+	orphansSeen := map[uint32]engine.OrphanProcess{}
 	selfPID := uint32(os.Getpid())
 	count := 0
 
 	opts := engine.Options{
 		Interval: *interval,
 		Act:      false,
+		OnSample: func(a engine.Assessment) {
+			for _, o := range a.Orphans {
+				orphansSeen[o.PID] = o
+			}
+		},
 		OnReading: func(s engine.Sample) {
 			if count == 0 {
 				first = s
@@ -465,6 +506,13 @@ func cmdDoctor(args []string) {
 	}
 
 	printDoctorSpawns(firstDeep, lastDeep, spawnByParent, elapsedMin)
+	if len(orphansSeen) > 0 {
+		fmt.Printf("\n退出后仍滞留的无窗孤儿子进程\n")
+		for _, o := range orphansSeen {
+			fmt.Printf("  %-24s (PID %d, 原父进程 %s[%d])  私有提交 %s  工作集 %s\n",
+				truncateName(o.Name, 24), o.PID, o.ParentName, o.ParentPID, human(o.Private), human(o.WorkingSet))
+		}
+	}
 	printDoctorGrowers(firstPriv, lastPriv, names, firstDeep.ProcGroups, lastDeep.ProcGroups)
 	printDoctorPools(firstDeep, lastDeep)
 
@@ -824,6 +872,79 @@ func prettyEntry(line string) string {
 	}
 }
 
+// ---------- ledger ----------
+
+func cmdLedger(args []string) {
+	fs := flag.NewFlagSet("ledger", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "输出 JSON")
+	reset := fs.Bool("reset", false, "重置累计账本")
+	_ = fs.Parse(args)
+
+	lg, err := ledger.Open(config.Dir())
+	if err != nil {
+		fail("读取静默账本失败: %v", err)
+	}
+	if *reset {
+		if err := lg.Reset(); err != nil {
+			fail("重置失败: %v", err)
+		}
+		fmt.Printf("已重置静默账本: %s\n", lg.Path())
+		return
+	}
+	data := lg.Snapshot()
+	if *asJSON {
+		raw, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(raw))
+		return
+	}
+	fmt.Print(formatLedgerText(data))
+	fmt.Printf("\n账本文件: %s\n", lg.Path())
+}
+
+func formatLedgerText(d ledger.Data) string {
+	var b strings.Builder
+	hours := d.TotalGuardSeconds / 3600.0
+	fmt.Fprintf(&b, "MEMORA 静默守护账本（Quiet Ledger）\n\n")
+	if !d.StartedAt.IsZero() {
+		fmt.Fprintf(&b, "建账时间   %s（累计启动 %d 次会话）\n", d.StartedAt.Format("2006-01-02 15:04"), d.Sessions)
+	}
+	fmt.Fprintf(&b, "静默护航   %.1f 小时（共 %d 次感知采样）\n", hours, d.TotalSamples)
+	fmt.Fprintf(&b, "主动克制   %.1f%% 采样选择不打扰（%d / %d 次按兵不动）\n",
+		d.RestraintRate(), d.RestrainedSamples, d.TotalSamples)
+	fmt.Fprintf(&b, "全屏静音   因全屏应用/游戏专注主动跳过干涉 %d 次\n", d.FullscreenSkips)
+	fmt.Fprintf(&b, "温和调度   后台低内存优先/EcoQoS 软调节 %d 次，回前台/唤醒恢复 %d 次\n",
+		d.SoftDowngrades, d.SoftRestores)
+	if d.TrimActions > 0 {
+		fmt.Fprintf(&b, "高压干预   仅在吃紧阈值介入 %d 次（高压脱险 %d 次，平均单次真实回落 %.0f MB）\n",
+			d.TrimActions, d.PeakSaves, d.AvgReclaimMB())
+	} else {
+		fmt.Fprintf(&b, "高压干预   0 次（系统始终未跌破压力阈值）\n")
+	}
+	fmt.Fprintf(&b, "孤儿收敛   捕获主程序退出后仍滞留的无窗子进程 %d 个\n", d.OrphansDetected)
+	if d.KernelLeakObservations > 0 {
+		fmt.Fprintf(&b, "内核暗伤   累计预警 %d 次（最近: %s）\n", d.KernelLeakObservations, d.LastKernelLeakDesc)
+	}
+	if len(d.DailyBaselines) > 0 {
+		fmt.Fprintf(&b, "\n近期每日最低空载水位（越接近说明长期使用后越能回到空载）\n")
+		start := len(d.DailyBaselines) - 7
+		if start < 0 {
+			start = 0
+		}
+		for _, day := range d.DailyBaselines[start:] {
+			extra := ""
+			if day.VidMB >= 100 {
+				extra += fmt.Sprintf("  Vid %.1f GB", day.VidMB/1024)
+			}
+			if day.ProcessObjects > 0 {
+				extra += fmt.Sprintf("  Process对象 %d", day.ProcessObjects)
+			}
+			fmt.Fprintf(&b, "  %s  最低物理占用 %.1f GB  最低进程私有提交 %.1f GB%s\n",
+				day.Date, day.MinInUseMB/1024, day.MinPrivateMB/1024, extra)
+		}
+	}
+	return b.String()
+}
+
 // ---------- config ----------
 
 func cmdConfig(args []string) {
@@ -851,16 +972,23 @@ func cmdConfig(args []string) {
 
 func cmdStartup(args []string) {
 	if len(args) < 1 {
-		fmt.Println("用法: memora startup enable|disable|status")
+		fmt.Println("用法: memora startup enable [--tray] | disable | status")
 		return
 	}
 	switch args[0] {
 	case "enable":
+		fs := flag.NewFlagSet("startup-enable", flag.ExitOnError)
+		withTray := fs.Bool("tray", false, "以轻量系统托盘方式开机启动")
+		_ = fs.Parse(args[1:])
 		exe, err := os.Executable()
 		if err != nil {
 			fail("%v", err)
 		}
-		value := fmt.Sprintf(`"%s" watch --quiet --hidden`, exe)
+		modeArgs := "watch --quiet --hidden"
+		if *withTray {
+			modeArgs = "tray --hidden"
+		}
+		value := fmt.Sprintf(`"%s" %s`, exe, modeArgs)
 		if err := runReg("add", runKey, "/v", "MEMORA", "/t", "REG_SZ", "/d", value, "/f"); err != nil {
 			fail("%v", err)
 		}

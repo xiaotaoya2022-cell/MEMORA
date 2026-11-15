@@ -6,21 +6,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Actions selects which management behaviours are allowed at all. A disabled
 // action is never attempted, regardless of how bad the system looks.
 type Actions struct {
-	TrimIdleWorkingSets bool `json:"trim_idle_working_sets"`
-	PurgeStandby        bool `json:"purge_standby"`
+	SmartMemorySchedule     bool `json:"smart_memory_schedule"`
+	SoftMemoryPriority      bool `json:"soft_memory_priority"`
+	EcoQoSBackground        bool `json:"eco_qos_background"`
+	SuppressSpawnStorm      bool `json:"suppress_spawn_storm"`
+	AutoLearnStormList      bool `json:"auto_learn_storm_list"`
+	TrimIdleWorkingSets     bool `json:"trim_idle_working_sets"`
+	PurgeStandby            bool `json:"purge_standby"`
+	MitigateConflictDrivers bool `json:"mitigate_conflict_drivers"`
+	EdgeHorizon             bool `json:"edge_horizon"`
 }
 
-// Thresholds are the numbers the policy uses to decide. They are deliberately
-// conservative; lowering them is how a user turns MEMORA into a cleaner, and
-// that is their explicit choice, not a default.
+// EdgeWidgetConfig configures the native edge-docked "贴边真相光尺 · Edge Horizon" HUD.
+type EdgeWidgetConfig struct {
+	Side     string  `json:"side"`      // "left" | "right"
+	YPercent float64 `json:"y_percent"` // 0.04 .. 0.92
+}
+
+// Thresholds are the numbers the policy uses to decide.
 type Thresholds struct {
 	AvailableLowPercent    float64 `json:"available_low_percent"`
 	TrimMinWorkingSetMB    float64 `json:"trim_min_working_set_mb"`
+	SoftIdleMinutes        float64 `json:"soft_idle_minutes"`
+	OrphanIdleMinutes      float64 `json:"orphan_idle_minutes"`
 	IdleMinutes            float64 `json:"idle_minutes"`
 	CooldownMinutes        float64 `json:"cooldown_minutes"`
 	MaxActionsPerHour      int     `json:"max_actions_per_hour"`
@@ -28,37 +42,61 @@ type Thresholds struct {
 	GrowthWindowMinutes    float64 `json:"growth_window_minutes"`
 	GrowthSignalMB         float64 `json:"growth_signal_mb"`
 	StandbyPurgeMinMB      float64 `json:"standby_purge_min_mb"`
+	QuietOnFullscreen      bool    `json:"quiet_on_fullscreen"`
 }
 
 // Config is the whole settings file.
 type Config struct {
-	Mode            string     `json:"mode"` // observe | guard
-	IntervalSeconds int        `json:"interval_seconds"`
-	Actions         Actions    `json:"actions"`
-	Thresholds      Thresholds `json:"thresholds"`
-	Protected       []string   `json:"protected_processes"`
+	Mode               string           `json:"mode"` // observe | guard
+	IntervalSeconds    int              `json:"interval_seconds"`
+	Actions            Actions          `json:"actions"`
+	Thresholds         Thresholds       `json:"thresholds"`
+	EdgeWidget         EdgeWidgetConfig `json:"edge_widget"`
+	Protected          []string         `json:"protected_processes"`
+	Whitelist          []string         `json:"whitelist,omitempty"`
+	SuppressedSpawners []string         `json:"suppressed_spawners,omitempty"`
 }
 
-// Default returns the shipped defaults. Guard mode is on, but only the
-// least destructive action is enabled, and only under real pressure.
+// DefaultSuppressedSpawners returns the shipped default persistent spawner suppression list.
+// Shipped empty so fresh installations never hardcode author/OEM-specific process assumptions;
+// AutoLearnStormList and user rules populate it strictly from observed behavior on the host PC.
+func DefaultSuppressedSpawners() []string {
+	return []string{}
+}
+
+// Default returns the shipped defaults with continuous multi-tier smart scheduling.
 func Default() Config {
 	return Config{
 		Mode:            "guard",
 		IntervalSeconds: 10,
 		Actions: Actions{
-			TrimIdleWorkingSets: true,
-			PurgeStandby:        false,
+			SmartMemorySchedule:     true,
+			SoftMemoryPriority:      true,
+			EcoQoSBackground:        true,
+			SuppressSpawnStorm:      true,
+			AutoLearnStormList:      true,
+			TrimIdleWorkingSets:     true,
+			PurgeStandby:            true,
+			MitigateConflictDrivers: true,
+			EdgeHorizon:             true,
 		},
 		Thresholds: Thresholds{
-			AvailableLowPercent:    12,
-			TrimMinWorkingSetMB:    180,
-			IdleMinutes:            20,
-			CooldownMinutes:        10,
-			MaxActionsPerHour:      4,
-			ReclaimBudgetMBPerHour: 1024,
+			AvailableLowPercent:    22,
+			TrimMinWorkingSetMB:    35,
+			SoftIdleMinutes:        2,
+			OrphanIdleMinutes:      1,
+			IdleMinutes:            4,
+			CooldownMinutes:        2,
+			MaxActionsPerHour:      30,
+			ReclaimBudgetMBPerHour: 8192,
 			GrowthWindowMinutes:    30,
 			GrowthSignalMB:         400,
-			StandbyPurgeMinMB:      1536,
+			StandbyPurgeMinMB:      1024,
+			QuietOnFullscreen:      true,
+		},
+		EdgeWidget: EdgeWidgetConfig{
+			Side:     "left",
+			YPercent: 0.22,
 		},
 		Protected: []string{
 			"system", "registry", "memory compression", "secure system",
@@ -68,6 +106,8 @@ func Default() Config {
 			"explorer.exe", "audiodg.exe", "msmpeng.exe", "securityhealthservice.exe",
 			"nissrv.exe", "memora.exe",
 		},
+		Whitelist:          []string{},
+		SuppressedSpawners: DefaultSuppressedSpawners(),
 	}
 }
 
@@ -104,13 +144,89 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Default(), fmt.Errorf("parse %s: %w", path, err)
 	}
+	migrated := sanitize(&cfg)
+	if migrated {
+		_ = Save(cfg)
+	}
+	return cfg, nil
+}
+
+func sanitize(cfg *Config) bool {
+	changed := false
 	if cfg.IntervalSeconds < 2 {
 		cfg.IntervalSeconds = 2
+		changed = true
 	}
 	if cfg.Mode != "observe" && cfg.Mode != "guard" {
 		cfg.Mode = "observe"
+		changed = true
 	}
-	return cfg, nil
+	if cfg.EdgeWidget.Side != "left" && cfg.EdgeWidget.Side != "right" {
+		cfg.EdgeWidget.Side = "left"
+		changed = true
+	}
+	if cfg.EdgeWidget.YPercent <= 0 {
+		cfg.EdgeWidget.YPercent = 0.22
+		changed = true
+	} else if cfg.EdgeWidget.YPercent < 0.04 {
+		cfg.EdgeWidget.YPercent = 0.04
+		changed = true
+	} else if cfg.EdgeWidget.YPercent > 0.92 {
+		cfg.EdgeWidget.YPercent = 0.92
+		changed = true
+	}
+	if cfg.Whitelist == nil {
+		cfg.Whitelist = []string{}
+		changed = true
+	} else {
+		dedupedWL := dedupeLowerNames(cfg.Whitelist)
+		if len(dedupedWL) != len(cfg.Whitelist) {
+			cfg.Whitelist = dedupedWL
+			changed = true
+		}
+	}
+	if cfg.SuppressedSpawners == nil {
+		cfg.SuppressedSpawners = DefaultSuppressedSpawners()
+		changed = true
+	} else {
+		deduped := dedupeLowerNames(cfg.SuppressedSpawners)
+		if len(deduped) != len(cfg.SuppressedSpawners) {
+			cfg.SuppressedSpawners = deduped
+			changed = true
+		}
+	}
+	// Migrate unmodified v0.1/v0.2 conservative shipped thresholds to v0.3 smart scheduling.
+	t := &cfg.Thresholds
+	if t.AvailableLowPercent == 12 &&
+		t.TrimMinWorkingSetMB == 180 &&
+		t.IdleMinutes == 20 &&
+		t.MaxActionsPerHour == 4 {
+		def := Default()
+		cfg.Thresholds = def.Thresholds
+		cfg.Actions.SmartMemorySchedule = true
+		cfg.Actions.SuppressSpawnStorm = true
+		cfg.Actions.AutoLearnStormList = true
+		cfg.Actions.PurgeStandby = true
+		return true
+	}
+	return changed
+}
+
+func dedupeLowerNames(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, s := range items {
+		k := strings.ToLower(strings.TrimSpace(s))
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
 }
 
 // Save writes the settings as indented JSON.

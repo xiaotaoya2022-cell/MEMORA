@@ -15,6 +15,7 @@ import (
 
 	"memora/internal/config"
 	"memora/internal/journal"
+	"memora/internal/ledger"
 	"memora/internal/proc"
 	"memora/internal/winmem"
 )
@@ -37,6 +38,17 @@ type Grower struct {
 	Delta uint64
 }
 
+// OrphanProcess represents a detached non-system background process holding significant
+// memory after its tracked parent process exited without leaving a visible window.
+type OrphanProcess struct {
+	PID        uint32 `json:"pid"`
+	ParentPID  uint32 `json:"parent_pid"`
+	ParentName string `json:"parent_name"`
+	Name       string `json:"name"`
+	WorkingSet uint64 `json:"working_set_bytes"`
+	Private    uint64 `json:"private_bytes"`
+}
+
 // Assessment is the current reading plus the trend behind it.
 type Assessment struct {
 	At              time.Time
@@ -55,13 +67,25 @@ type Assessment struct {
 	Kind            string // none | commit | workset | standby
 	Severity        int    // 0 quiet, 1 watching, 2 pressure, 3 critical
 	TopGrowers      []Grower
+	FullscreenState uint32
+	FullscreenQuiet       bool
+	FullscreenLabel       string
+	FamilyProtected       int
+	SoftManaged           int
+	SmartTier             int
+	SmartLabel            string
+	SpawnRatePerMin       float64
+	TopSpawners           []SpawnerStat
+	Orphans               []OrphanProcess
+	AdaptiveCooldownProcs []string `json:"adaptive_cooldown_procs,omitempty"`
 }
 
 // Plan is what the policy decided to do, and why.
 type Plan struct {
-	Trim   []proc.Info
-	Purge  bool
-	Reason string
+	Trim             []proc.Info
+	Purge            bool
+	PurgeLowPriority bool
+	Reason           string
 }
 
 // Options control one run of the engine.
@@ -94,36 +118,100 @@ type histPoint struct {
 	snap winmem.Snapshot
 }
 
-// Engine holds the run state. It is not safe for concurrent use.
+type spawnEvent struct {
+	At    time.Time
+	PPID  uint32
+	Name  string
+	Count int
+}
+
+type trimObservation struct {
+	At          time.Time
+	Name        string
+	PostTrimWS  uint64
+	ShrunkBytes uint64
+	Checked     bool
+}
+
+// Engine holds the run state. It is not safe for concurrent use across Step calls,
+// though mode updates from control UIs may use SetMode/ConfigSnapshot safely.
 type Engine struct {
 	cfg config.Config
 	jr  *journal.Journal
+	lg  *ledger.Ledger
 
 	hist       []histPoint
 	baseline   map[uint32]baselineProc
 	baselineAt time.Time
 
-	lastCPU   map[uint32]cpuMark
-	idleSince map[uint32]time.Time
-	lastAt    time.Time
+	lastCPU    map[uint32]cpuMark
+	lastCPUPct map[uint32]float64
+	idleSince  map[uint32]time.Time
+	lastAt     time.Time
 
 	lastAction  time.Time
 	actionTimes []time.Time
 	reclaims    []reclaim
 	lastPurge   time.Time
 	trimmedPIDs map[uint32]time.Time
+
+	lastTrimObs   map[uint32]trimObservation
+	reboundCounts map[string]int // lower(name) -> rebound count after TrimWorkingSet
+
+	seenParents      map[uint32]parentRecord
+	announcedOrphans map[uint32]bool
+	softState        map[uint32]softControl
+	qosDenied        map[uint32]bool
+	lastExtrasAt     time.Time
+
+	lastProcAllocs   uint32
+	lastProcAllocsAt time.Time
+	lastSpawnPoll    time.Time
+	seenPIDs         map[uint32]bool
+	spawnEvents      []spawnEvent
+	lastSmartTrim    time.Time
 }
 
 // New builds an engine around already-loaded settings.
 func New(cfg config.Config, jr *journal.Journal) *Engine {
 	return &Engine{
-		cfg:         cfg,
-		jr:          jr,
-		lastCPU:     map[uint32]cpuMark{},
-		idleSince:   map[uint32]time.Time{},
-		trimmedPIDs: map[uint32]time.Time{},
-		baseline:    map[uint32]baselineProc{},
+		cfg:              cfg,
+		jr:               jr,
+		lastCPU:          map[uint32]cpuMark{},
+		lastCPUPct:       map[uint32]float64{},
+		idleSince:        map[uint32]time.Time{},
+		trimmedPIDs:      map[uint32]time.Time{},
+		lastTrimObs:      map[uint32]trimObservation{},
+		reboundCounts:    map[string]int{},
+		baseline:         map[uint32]baselineProc{},
+		seenParents:      map[uint32]parentRecord{},
+		announcedOrphans: map[uint32]bool{},
+		softState:        map[uint32]softControl{},
+		qosDenied:        map[uint32]bool{},
+		seenPIDs:         map[uint32]bool{},
 	}
+}
+
+// SetLedger attaches an optional long-term Quiet Ledger to the engine.
+func (e *Engine) SetLedger(lg *ledger.Ledger) {
+	e.lg = lg
+}
+
+// SetMode switches between "guard" and "observe"; switching away from guard
+// restores any active soft priority / EcoQoS hints immediately.
+func (e *Engine) SetMode(mode string) {
+	if mode != "guard" && mode != "observe" {
+		return
+	}
+	e.cfg.Mode = mode
+	if mode != "guard" {
+		e.RestoreAll()
+	}
+}
+
+// Mode returns the current policy mode ("guard" or "observe").
+func (e *Engine) Mode() string {
+	return e.cfg.Mode
 }
 
 func (e *Engine) interval(opts Options) time.Duration {
@@ -144,6 +232,9 @@ func (e *Engine) Run(ctx context.Context, opts Options) error {
 		Kind:   "start",
 		Detail: fmt.Sprintf("mode=%s interval=%s", e.cfg.Mode, interval),
 	})
+	if e.lg != nil {
+		_ = e.lg.StartSession()
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -151,6 +242,10 @@ func (e *Engine) Run(ctx context.Context, opts Options) error {
 	for {
 		select {
 		case <-ctx.Done():
+			e.RestoreAll()
+			if e.lg != nil {
+				_ = e.lg.Flush()
+			}
 			e.record(journal.Entry{Kind: "stop", Detail: "context cancelled"})
 			return nil
 		case <-ticker.C:
@@ -172,22 +267,76 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	}
 
 	a := e.assess(s)
+	fgPID := proc.ForegroundPID()
+	family := proc.FamilyPIDs(s.Procs, fgPID)
+	qState, qBusy := proc.IsFullscreenOrBusy()
+	a.FullscreenState = qState
+	a.FullscreenQuiet = e.cfg.Thresholds.QuietOnFullscreen && qBusy
+	a.FullscreenLabel = proc.NotificationStateLabel(qState)
+	a.FamilyProtected = len(family)
 
+	a.Orphans = e.detectOrphans(s.Procs, family)
+	e.recordNewOrphans(a.Orphans)
+	e.evaluateTrimRebounds(s)
+
+	extras := winmem.ReadSystemExtras(s.Snap.PageSize)
+	_, tightNUMA := NUMADisparity(extras.NUMANodes)
+	a.SmartTier, a.SmartLabel = computeSmartTier(a.AvailPct, tightNUMA)
+
+	canAct := opts.Act && e.cfg.Mode == "guard" && !a.FullscreenQuiet
+	a.SpawnRatePerMin, a.TopSpawners = e.trackSpawns(s, family, canAct)
+
+	acted := false
 	if opts.Act && e.cfg.Mode == "guard" {
-		candidates := s.Procs
-		if opts.TargetPID != 0 {
-			candidates = candidates[:0:0]
-			for _, p := range s.Procs {
-				if p.PID == opts.TargetPID {
-					candidates = append(candidates, p)
+		e.restoreEligibleQoS(s.Procs, family, a.SpawnRatePerMin)
+		if !a.FullscreenQuiet {
+			if e.cfg.Actions.SmartMemorySchedule {
+				if e.stepSmartSchedule(opts, s, &a, family) {
+					acted = true
+				}
+			} else {
+				e.applySoftQoS(s, opts.TargetPID, family, a.Orphans, a.SmartTier)
+				candidates := s.Procs
+				if opts.TargetPID != 0 {
+					candidates = candidates[:0:0]
+					for _, p := range s.Procs {
+						if p.PID == opts.TargetPID {
+							candidates = append(candidates, p)
+						}
+					}
+				}
+				if plan, ok := e.plan(a, candidates, family); ok {
+					if after, ok := e.execute(opts, plan, a); ok {
+						reclaimed := float64(after.Snap.AvailPhys)/(1<<20) - float64(a.Snap.AvailPhys)/(1<<20)
+						if reclaimed < 0 {
+							reclaimed = 0
+						}
+						if e.lg != nil {
+							e.lg.RecordTrim(reclaimed, a.Severity >= 2)
+						}
+						after.FullscreenState = a.FullscreenState
+						after.FullscreenQuiet = a.FullscreenQuiet
+						after.FullscreenLabel = a.FullscreenLabel
+						after.FamilyProtected = a.FamilyProtected
+						after.Orphans = a.Orphans
+						after.SmartTier = a.SmartTier
+						after.SmartLabel = a.SmartLabel
+						after.SpawnRatePerMin = a.SpawnRatePerMin
+						after.TopSpawners = a.TopSpawners
+						a = after
+						acted = true
+					}
 				}
 			}
 		}
-		if plan, ok := e.plan(a, candidates); ok {
-			if after, ok := e.execute(opts, plan, a); ok {
-				a = after
-			}
-		}
+	}
+	a.SoftManaged = len(e.softState)
+	a.AdaptiveCooldownProcs = e.AdaptiveCooldownNames()
+
+	if e.lg != nil && opts.Act {
+		e.lg.RecordSample(s.At, e.interval(opts), !acted, a.FullscreenQuiet,
+			float64(s.Snap.InUse())/(1<<20), float64(s.Private)/(1<<20))
+		e.maybeRecordExtras(s)
 	}
 
 	if opts.Verbose {
@@ -259,6 +408,7 @@ func (e *Engine) trackIdle(procs []proc.Info, now time.Time) {
 		wall = time.Second
 	}
 	nextCPU := make(map[uint32]cpuMark, len(procs))
+	nextPct := make(map[uint32]float64, len(procs))
 	nextIdle := make(map[uint32]time.Time, len(e.idleSince))
 
 	for _, p := range procs {
@@ -268,6 +418,7 @@ func (e *Engine) trackIdle(procs []proc.Info, now time.Time) {
 			pct = (p.CPUSeconds - prev.seconds) / wall.Seconds() * 100
 		}
 		nextCPU[p.PID] = cpuMark{seconds: p.CPUSeconds, at: now}
+		nextPct[p.PID] = pct
 
 		if pct < 1.0 {
 			if since, ok := e.idleSince[p.PID]; ok {
@@ -279,6 +430,7 @@ func (e *Engine) trackIdle(procs []proc.Info, now time.Time) {
 	}
 
 	e.lastCPU = nextCPU
+	e.lastCPUPct = nextPct
 	e.idleSince = nextIdle
 }
 
@@ -374,7 +526,7 @@ func slopeMBPerHour(hist []histPoint, value func(winmem.Snapshot) float64) float
 	return (n*sumXY - sumX*sumY) / den
 }
 
-func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
+func (e *Engine) plan(a Assessment, procs []proc.Info, family map[uint32]bool) (Plan, bool) {
 	t := e.cfg.Thresholds
 	if a.AvailPct >= t.AvailableLowPercent || a.Severity < 2 {
 		return Plan{}, false
@@ -396,7 +548,7 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 	if e.cfg.Actions.TrimIdleWorkingSets {
 		candidates := make([]proc.Info, 0, len(procs))
 		for _, p := range procs {
-			if p.PID == foreground || p.PID == self {
+			if p.PID == foreground || p.PID == self || family[p.PID] {
 				continue
 			}
 			if p.WorkingSet < uint64(t.TrimMinWorkingSetMB*(1<<20)) {
@@ -435,6 +587,7 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 		float64(a.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB &&
 		time.Since(e.lastPurge) > 30*time.Minute {
 		plan.Purge = true
+		plan.PurgeLowPriority = a.Severity < 3
 		if plan.Reason == "" {
 			plan.Reason = fmt.Sprintf("待机缓存 %.0f MB，可用内存 %.1f%%",
 				float64(a.Snap.Pages.Standby)/(1<<20), a.AvailPct)
@@ -450,10 +603,14 @@ func (e *Engine) plan(a Assessment, procs []proc.Info) (Plan, bool) {
 func (e *Engine) execute(opts Options, plan Plan, before Assessment) (Assessment, bool) {
 	b := statsOf(before)
 	action := "trim_idle_working_sets"
+	purgeAction := "purge_standby"
+	if plan.PurgeLowPriority {
+		purgeAction = "purge_low_priority_standby"
+	}
 	if plan.Purge && len(plan.Trim) > 0 {
-		action = "trim_idle_working_sets+purge_standby"
+		action = "trim_idle_working_sets+" + purgeAction
 	} else if plan.Purge {
-		action = "purge_standby"
+		action = purgeAction
 	}
 
 	entry := journal.Entry{
@@ -479,7 +636,13 @@ func (e *Engine) execute(opts Options, plan Plan, before Assessment) (Assessment
 		e.trimmedPIDs[p.PID] = time.Now()
 	}
 	if plan.Purge {
-		if err := winmem.PurgeStandby(); err != nil {
+		var err error
+		if plan.PurgeLowPriority {
+			err = winmem.PurgeLowPriorityStandby()
+		} else {
+			err = winmem.PurgeStandby()
+		}
+		if err != nil {
 			failures = append(failures, err.Error())
 		} else {
 			e.lastPurge = time.Now()
@@ -519,9 +682,31 @@ func (e *Engine) execute(opts Options, plan Plan, before Assessment) (Assessment
 	return after, true
 }
 
+func isEssentialInteractive(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "wetype_server.exe", "wetype_service.exe", "wetype.exe",
+		"ctfmon.exe", "textinputhost.exe", "chstime.exe",
+		"sogoucloud.exe", "sogouimebroker.exe", "sgtool.exe",
+		"qqpinyin.exe", "baiduime.exe", "weaselserver.exe",
+		"shellexperiencehost.exe", "startmenuexperiencehost.exe",
+		"searchhost.exe", "lockapp.exe":
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) isProtected(name string) bool {
+	if isEssentialInteractive(name) {
+		return true
+	}
 	for _, p := range e.cfg.Protected {
 		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	for _, w := range e.cfg.Whitelist {
+		if strings.EqualFold(strings.TrimSpace(w), name) {
 			return true
 		}
 	}
@@ -578,7 +763,22 @@ func formatLine(a Assessment) string {
 	kind := map[string]string{
 		"none": "安静", "commit": "提交增长", "workset": "工作集增长", "standby": "待机缓存",
 	}[a.Kind]
-	return fmt.Sprintf("%s  可用 %.1f GB (%.0f%%)  使用 %.1f GB  提交 %.1f GB  待机 %.1f GB  趋势 %+.0f MB/h  %s",
+	extra := ""
+	if a.SmartLabel != "" {
+		extra = "  [" + a.SmartLabel + "]"
+	}
+	if a.FullscreenQuiet {
+		extra += "  [" + a.FullscreenLabel + "免打扰]"
+	} else if a.SoftManaged > 0 {
+		extra += fmt.Sprintf("  [软管理:%d]", a.SoftManaged)
+	}
+	if a.SpawnRatePerMin >= 20 {
+		extra += fmt.Sprintf("  [派生:%.0f/分]", a.SpawnRatePerMin)
+	}
+	if len(a.Orphans) > 0 {
+		extra += fmt.Sprintf("  [孤儿残留:%d]", len(a.Orphans))
+	}
+	return fmt.Sprintf("%s  可用 %.1f GB (%.0f%%)  使用 %.1f GB  提交 %.1f GB  待机 %.1f GB  趋势 %+.0f MB/h  %s%s",
 		a.At.Format("15:04:05"),
 		float64(a.Snap.AvailPhys)/(1<<30),
 		a.AvailPct,
@@ -587,5 +787,6 @@ func formatLine(a Assessment) string {
 		float64(a.Snap.Pages.Standby)/(1<<30),
 		a.CommitSlope,
 		kind,
+		extra,
 	)
 }

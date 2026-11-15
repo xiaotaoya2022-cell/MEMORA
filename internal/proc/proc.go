@@ -3,6 +3,7 @@ package proc
 
 import (
 	"fmt"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -12,6 +13,7 @@ const (
 	processQueryInformation        = 0x0400
 	processVMRead                  = 0x0010
 	processSetQuota                = 0x0100
+	processSetInformation          = 0x0200
 
 	systemProcessInformation = 5
 	statusInfoLengthMismatch = 0xC0000004
@@ -96,6 +98,7 @@ type Info struct {
 	PID        uint32
 	ParentPID  uint32
 	SessionID  uint32
+	CreateTime int64 // Windows FILETIME (100ns ticks since 1601-01-01)
 	Name       string
 	WorkingSet uint64
 	PrivateWS  uint64
@@ -174,6 +177,7 @@ func parseSystemProcesses(buf []byte) []Info {
 				PID:        pid,
 				ParentPID:  uint32(entry.InheritedFromUniqueProcessId),
 				SessionID:  entry.SessionId,
+				CreateTime: entry.CreateTime,
 				Name:       name,
 				WorkingSet: uint64(entry.WorkingSetSize),
 				PrivateWS:  privWS,
@@ -201,12 +205,19 @@ func readUnicodeString(us unicodeString, base uintptr, buf []byte) string {
 		return ""
 	}
 	n := byteLen / 2
-	u16 := make([]uint16, n)
+	u16 := make([]uint16, 0, n)
 	for i := 0; i < n; i++ {
 		off := rel + i*2
-		u16[i] = uint16(buf[off]) | uint16(buf[off+1])<<8
+		ch := uint16(buf[off]) | uint16(buf[off+1])<<8
+		if ch == 0 {
+			break
+		}
+		if ch < 32 {
+			continue
+		}
+		u16 = append(u16, ch)
 	}
-	return syscall.UTF16ToString(u16)
+	return strings.TrimSpace(syscall.UTF16ToString(u16))
 }
 
 func listViaEnumProcesses() ([]Info, error) {
@@ -345,6 +356,13 @@ func ForegroundPID() uint32 {
 // TrimWorkingSet asks Windows to move a process's pages to the standby list.
 // Requires PROCESS_SET_QUOTA plus query access; returns the call's error.
 func TrimWorkingSet(pid uint32) error {
+	_, err := TrimWorkingSetMeasured(pid)
+	return err
+}
+
+// TrimWorkingSetMeasured empties pid's working set and returns the measured
+// reduction in that process's working set size in bytes.
+func TrimWorkingSetMeasured(pid uint32) (uint64, error) {
 	r, _, err := procOpenProcess.Call(
 		processSetQuota|processQueryLimitedInformation,
 		0,
@@ -358,14 +376,46 @@ func TrimWorkingSet(pid uint32) error {
 		)
 	}
 	if r == 0 {
-		return fmt.Errorf("OpenProcess(%d): %w", pid, err)
+		return 0, fmt.Errorf("OpenProcess(%d): %w", pid, err)
 	}
 	handle := syscall.Handle(r)
 	defer procCloseHandle.Call(uintptr(handle))
 
+	beforeWS := readWorkingSet(handle)
 	ok, _, callErr := procEmptyWorkingSet.Call(uintptr(handle))
 	if ok == 0 {
-		return fmt.Errorf("EmptyWorkingSet(%d): %w", pid, callErr)
+		return 0, fmt.Errorf("EmptyWorkingSet(%d): %w", pid, callErr)
 	}
-	return nil
+	afterWS := readWorkingSet(handle)
+	if beforeWS > afterWS {
+		return beforeWS - afterWS, nil
+	}
+	return 0, nil
+}
+
+func readWorkingSet(handle syscall.Handle) uint64 {
+	var mc processMemoryCountersEx
+	mc.Cb = uint32(unsafe.Sizeof(mc))
+	r, _, _ := procGetProcessMemoryInfo.Call(
+		uintptr(handle),
+		uintptr(unsafe.Pointer(&mc)),
+		unsafe.Sizeof(mc),
+	)
+	if r == 0 {
+		return 0
+	}
+	return uint64(mc.WorkingSetSize)
+}
+
+// ProcessNameByPID returns the executable base name for pid, if accessible.
+func ProcessNameByPID(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	h, ok := open(pid)
+	if !ok {
+		return ""
+	}
+	defer procCloseHandle.Call(uintptr(h))
+	return imageName(h)
 }

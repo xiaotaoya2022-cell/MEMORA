@@ -11,16 +11,22 @@
 - 不对系统进程、会话关键进程、安全软件动手（见保护名单）。
 - 不在内存充裕时动手。可用内存高于阈值时，策略层直接返回空计划。
 
-## 保护名单
+## 保护名单与场景免疫
 
 内置保护：System、Registry、Memory Compression、Secure System、vmmem / vmmemWSL /
 vmcompute / vmwp、smss、csrss、wininit、winlogon、services、lsass、svchost、dwm、
 explorer、audiodg、MsMpEng、SecurityHealthService、NisSrv，以及 MEMORA 自己。
 名单在 `config.json` 的 `protected_processes` 里可增删，但删除关键项由用户承担后果。
 
+除固定保护名单外，运行时还有三道动态安全边界：
+
+1. **全屏/游戏静音锁（`quiet_on_fullscreen`，默认开启）**：检测到 `QUNS_BUSY`、Direct3D 独占全屏或演示模式时，暂停全部调度与工作集修整，确保前台体验零干预；
+2. **前台进程家族树免疫（`FamilyPIDs`）**：不仅保护当前焦点窗口所属进程，还一并保护其直系父进程与所有后代子进程（防止多进程游戏启动器、IDE 语言服务器或浏览器标签页被误伤）；
+3. **软调度完全可逆**：`soft_memory_priority` 与 `eco_qos_background` 只修改内核页优先级与后台电源节流标志，永不调用 `TerminateProcess` 杀进程；目标切回前台或 MEMORA 正常退出时自动恢复原优先级。
+
 ## 五道闸门
 
-一次动作要同时满足：
+重型动作（工作集修整或待机缓存清理）必须同时满足：
 
 | 闸门 | 默认值 | 作用 |
 |---|---|---|
@@ -30,7 +36,7 @@ explorer、audiodg、MsMpEng、SecurityHealthService、NisSrv，以及 MEMORA �
 | 每小时回收预算 | 1024 MB | 防止为了指标反复折腾 |
 | 动作开关 | 见配置 | 关掉即永不尝试 |
 
-此外，前台窗口所属进程永远不会被回收工作集：用户正在看的东西，不动。
+此外，处于前台家族树内的任何进程永远不会被降级或回收工作集：用户正在交互的整条任务链，不动。
 
 ## 动作的代价，写明白
 

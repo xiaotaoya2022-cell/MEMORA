@@ -5,8 +5,10 @@
 package journal
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -117,4 +119,49 @@ func (j *Journal) Close() error {
 	err := j.file.Close()
 	j.file = nil
 	return err
+}
+
+// Tail reads up to n most recent valid entries from the active journal file in chronological order.
+func Tail(path string, n int) ([]Entry, error) {
+	if n <= 0 || path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	const tailWindow = 512 << 10
+	if info, err := f.Stat(); err == nil && info.Size() > tailWindow {
+		if _, err := f.Seek(-tailWindow, io.SeekEnd); err == nil {
+			// Skip the partial first line after seeking mid-file.
+			r := bufio.NewReader(f)
+			_, _ = r.ReadBytes('\n')
+			return scanLastEntries(r, n), nil
+		}
+	}
+	return scanLastEntries(f, n), nil
+}
+
+func scanLastEntries(r io.Reader, n int) []Entry {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	ring := make([]Entry, 0, n)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var e Entry
+		if json.Unmarshal(line, &e) == nil {
+			if len(ring) < n {
+				ring = append(ring, e)
+			} else {
+				copy(ring, ring[1:])
+				ring[n-1] = e
+			}
+		}
+	}
+	return ring
 }

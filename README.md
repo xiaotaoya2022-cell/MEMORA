@@ -35,6 +35,7 @@ MEMORA 致力于解决 Windows 长时间运行过程中可能出现的内存资�
 - **Zero Interference** — 将正常进程的稳定运行和多任务体验放在首位。
 - **Minimal Footprint** — 尽可能降低自身 CPU、内存和磁盘资源消耗。
 - **Open & Transparent** — 保持开源、可审计，让每一次管理行为都有依据。
+- **Long-Term Stewardship** — 坚持长期主义，用跨天、跨周的静默账本与主动克制记录证明价值，不靠短暂数字刷存在感。
 
 ## 做什么，不做什么
 
@@ -59,7 +60,7 @@ MEMORA 致力于解决 Windows 长时间运行过程中可能出现的内存资�
 
 我们不希望用户每天打开 MEMORA，也不希望用户不断点击内存清理按钮。
 
-MEMORA 应该像系统中一个安静工作的守护者，长期驻留，持续感知，在真正需要时采取行动。
+MEMORA 应该像系统中一个安静工作的守护者，长期驻留，持续感知，在真正需要时采取行动。它也追求**长期主义**的陪伴感：你不需要天天盯着它，但隔几周或一两个月偶尔打开一次时，能够在一张冷静的「静默账本」里，清楚看到这段时间以来它护航了多久、有多少比例的时间选择了主动克制不打扰、拦截或缓解过多少次真实压力峰、收敛过多少组主程序退出后的后台残留，以及排查出过哪些平时看不见的驱动/虚机暗账。
 
 它不应该让你的电脑拥有超出硬件规格的内存。
 
@@ -73,15 +74,19 @@ MEMORA 应该像系统中一个安静工作的守护者，长期驻留，持续�
 
 ```powershell
 .\build.ps1                        # 产出 bin\memora.exe（单文件、无运行时依赖）
+.\build.ps1 -Installer             # 跑全套校验测试并产出正式 Windows 安装向导安装包 (*-setup.exe)
 .\bin\memora.exe status            # 看一眼当前的内存形态（含完整进程、Vid/NUMA、内核异常摘要）
 .\bin\memora.exe status --deep     # 深度诊断：扫描已加载驱动以匹配异常 Pool Tag 对应的 .sys
-.\bin\memora.exe doctor --minutes 10   # 观察一段时间，算斜率并做进程创建/Pool Tag 增量归因
+.\bin\memora.exe doctor --minutes 10   # 观察一段时间，算斜率并做进程/无主残留/Pool Tag 增量归因
 .\bin\memora.exe watch --observe   # 前台观察模式：只记录，不做任何动作
-.\bin\memora.exe watch             # 守护模式：只有确实需要时才动作
-.\bin\memora.exe startup enable    # 开机自启（写入 HKCU Run，可随时 disable）
+.\bin\memora.exe watch             # 守护模式：按三级智能调度曲线温和自适应介入
+.\bin\memora.exe ui                # 启动/唤醒托盘守护并打开图形化性能调度与真相中心界面
+.\bin\memora.exe tray              # 轻量原生系统托盘常驻（双击托盘图标打开控制中心）
+.\bin\memora.exe ledger            # 查看「静默账本」（累计护航时长、克制率、峰值护航与基线）
+.\bin\memora.exe startup enable --tray   # 托盘模式开机自启（写入 HKCU Run，可随时 disable）
 ```
 
-`status`、`doctor` 与 `trace` 不会修改系统，可以放心跑。第一次使用建议先用 `watch --observe`
+`status`、`doctor`、`trace` 与 `ledger` 不会对系统内存做清扫修改，可以放心跑。第一次使用建议先用 `watch --observe` 或 `tray --observe`
 观察一两天，确认它判断的对象和你的实际感受一致，再切到守护模式。
 
 调试时可以用 `watch --only-pid <PID>` 把动作范围收窄到单个进程，正常使用不需要它。
@@ -90,13 +95,16 @@ MEMORA 应该像系统中一个安静工作的守护者，长期驻留，持续�
 
 | 命令 | 作用 |
 |---|---|
-| `status [--json] [--deep]` | 物理内存、提交、内核池、页链、`Vid`/NUMA、完整进程与套件排行、内核对象/Pool Tag；`--deep` 匹配驱动 `.sys` |
+| `memora`（无参数） / `ui` | 启动/唤醒托盘常驻进程并打开独立应用窗口版 **控制与真相中心界面** |
+| `status [--json] [--deep]` | 物理内存、提交、内核池、页链、`Vid`/NUMA、全屏保护态、完整进程与套件排行、内核对象/Pool Tag；`--deep` 匹配驱动 `.sys` |
 | `watch [--observe\|--quiet\|--hidden] [--interval D] [--only-pid PID]` | 常驻守护；`--observe` 只记录不动手，`--hidden` 隐藏控制台，`--interval` 覆盖周期 |
-| `doctor [--minutes N] [--interval D]` | 采样一段时间，算斜率，追踪进程创建/释放、`Proc`/Pool Tag 增量并匹配驱动给出结论 |
+| `tray [--observe\|--hidden] [--open-ui]` | 轻量 Win32 原生系统托盘常驻（双击图标打开控制中心，右键支持一键智能调度/切换模式/恢复默认） |
+| `doctor [--minutes N] [--interval D]` | 采样一段时间，算斜率，追踪进程创建/释放、主程序退出后的后台无主子进程、`Proc`/Pool Tag 增量并匹配驱动给出结论 |
 | `trace [--minutes N] [--interval D] [--out F]` | 把每次采样写成 JSONL，便于外部比对 |
+| `ledger [--json] [--reset]` | 查看长期「静默账本」（守护时长、克制率、游戏全屏避让次数、软降级收敛与 30 天低水位基线） |
 | `journal [--lines N] [--path]` | 读动作日志或打印日志路径，看它到底动过什么、回收了多少 |
 | `config [--reset]` | 查看或重置配置 |
-| `startup enable\|disable\|status` | 开机自启管理 |
+| `startup enable [--tray]\|disable\|status` | 开机自启管理（可指定托盘隐藏启动） |
 | `version` | 版本号 |
 
 ## 它是怎么判断的
@@ -142,20 +150,15 @@ MEMORA 不看"工作集"这个数字下结论。工作集包含共享页，同�
 
 ## 项目状态
 
-当前发布为 **v0.1.0 CLI 技术预览版（Pre-release，无 GUI / 托盘界面）**。核心采集、无盲区进程枚举、
-决策执行、日志、`Vid`/NUMA 监测、内核僵尸进程对象泄漏识别、`Pool Tag` 与驱动 `.sys` 匹配已落地并可运行；
-单文件静态链接（零第三方 Go 依赖），常驻约 7 MB。
+当前版本为 **v0.3.0**（单文件零外部 Go 依赖 `CGO_ENABLED=0`，含 NSIS 正式安装向导 `*setup.exe` 与独立 **控制与真相中心** 桌面图形界面）。核心采集、无盲区进程枚举、
+**三级智能内存调度引擎**（动态软调度 + 高频派生风暴压制 + 一键立即调度）、游戏真全屏避让（修复壁纸类 `QUNS_BUSY` 误判）、前台进程家族链免疫、`ProcessMemoryPriority`/`EcoQoS`/`BelowNormal CPU` 可逆控制、无主残留追踪、`Vid`/NUMA 监测、内核僵尸进程对象泄漏识别、`Pool Tag` 与驱动 `.sys` 匹配以及「静默账本」均已落地运行。
 
-当前能力边界与设计取舍：
+当前能力与设计亮点：
 
-- **纯命令行形态**：需在 PowerShell / 终端中携带子命令运行（例如 `memora.exe status --deep` 或 `memora.exe doctor`）；直接双击 `.exe` 只会打印用法后退出。
-- **用户态安全守护**：默认守护模式只按多道门控回收长期空闲用户进程的工作集，清空待机缓存默认关闭；绝不强杀进程，也不会对 `System` / `vmmemWSL` / 安全核心进程下手。
-- **内核与虚拟化问题诚实归因**：对于内核驱动引用泄漏（僵尸 `EPROCESS`、驱动非分页池不释放）和 `Vid` 锁页，MEMORA 负责提供免提权的实机取证与驱动/宿主指认，不会尝试在用户态篡改内核对象引用或强卸驱动——这类根因需靠更新/停用问题驱动、调整 WSL 内存配置或重启系统解决。
-
-开源协议与后续规划：
-
-- 开源协议：[MIT License](LICENSE)；
-- 尚未完成：原生轻量托盘/图形界面、安装包与代码签名（当前 Release 二进制未签名，首次运行如触发 SmartScreen 可自行运行 `.\build.ps1` 从源码编译并核对 `SHA256SUMS.txt`）。
+- **双形态入口与贴边真相光尺**：双击桌面图标或直接运行 `memora.exe` 即拉起基于 WebView2 / Chromium 的无边框独立应用窗口（`Porcelain Daylight Bento` 设计语言 + `Bahnschrift + Segoe UI Variable + Noto Sans SC` 精密字体栈），支持按硬件自动适配物理内存五维拆解（虚拟化/开发机展示 `WSL2 / Vid 锁页`，常规主机自动切换为「后台静默驻留」剖析长时闲置进程）；点击右上角「轻量模式」隐藏后 18 秒自动回收 WebView2 渲染宿主与工作集内存。屏幕边缘附带 4px 贴边真相光尺（Edge Horizon），支持全屏四边自由拖拽换边与 120Hz 弹簧贴靠，悬停展示物理内存与 **CPU / GPU 实时核心温度**，单击圆环就地触发深度释压。
+- **三级智能动态调度与反扑自校准**：不再等到可用内存跌破 12% 才介入——一级巡航温和降级闲置后台进程并持续监测派生风暴；二级平衡轻修整长时闲置大工作集；三级高压降级至 `VeryLow` 并安全清理低优先级待机缓存与修改页；支持基于前后对比的反扑自校准 (`adaptive_cooldown`) 与 7 天滑动窗口空载基线漂移归因（Top 5 元凶），永不强杀任何第三方软件。
+- **诚实内核取证与底层可靠性**：修复 PDH 句柄与 `EnumWindows` 回调长期运行增长问题；对于内核驱动引用泄漏（僵尸 `EPROCESS`）与 `Vid` 锁页提供直连内核数据拆解、涉事驱动 `.sys` 匹配与派生源压制；托盘图标支持连续不闪退操作及实时自占内存汇报。
+- **开源协议与 Authenticode 代码签名**：基于 [MIT License](LICENSE) 开源；构建链路已内嵌权威 `RT_VERSION` / `RT_MANIFEST` 元数据与 SHA-256 Authenticode 数字签名体系（支持环境变量接入外部商业 OV/EV 证书，并内置项目自签名证书与安装向导自动导入 `Root` / `TrustedPublisher` 信任链），同时随版本发布 `SHA256SUMS` 与 `install-trust-cert.cmd` 方便离线一键预置信任或源码复现验证。
 
 ## 参与
 
@@ -170,3 +173,9 @@ MEMORA is an open-source memory guardian engine for Windows. It targets abnormal
 It is not meant to give a machine more memory than its hardware has. It is meant to let a machine explain and use the memory it already owns, properly.
 
 **Memory, Back to Its Nature. Always Watching. Never Intruding.**
+
+---
+
+## Code Signing Policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), using a certificate by [SignPath Foundation](https://signpath.org/).
