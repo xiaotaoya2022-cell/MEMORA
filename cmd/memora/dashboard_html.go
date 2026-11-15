@@ -547,6 +547,8 @@ const dashboardHTML = `<!doctype html>
       color: #b45309;
     }
     .btn-ghost:disabled { opacity: 0.6; cursor: wait; }
+    @keyframes icoSpin { to { transform: rotate(360deg); } }
+    .ico-spin { animation: icoSpin 0.9s linear infinite; transform-origin: center; }
 
     /* Elastic Sliding Pill Toggle Switch (智能调度 / 关闭) */
     .mode-switch {
@@ -1628,7 +1630,7 @@ const dashboardHTML = `<!doctype html>
         </button>
         <div class="btn-primary-hint">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
         <button class="btn-ghost" id="btn-optimize-extreme" onclick="doOptimizeExtreme()" title="手动全域清空所有空闲工作集、系统文件缓存与待机列表（极客模式，仅手动触发）">
-          <svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/></svg>
+          <span id="btn-opt-ext-ico" style="display:inline-flex"><svg class="ico ico-sm" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="11 2 3 13 10 13 9 22 17 11 10 11 11 2"/><path d="M18 5l-3 5h4l-3 5"/></svg></span>
           <span id="btn-opt-ext-text">强力全域释压（含服务与缓存）</span>
         </button>
 
@@ -3336,17 +3338,26 @@ const dashboardHTML = `<!doctype html>
       }
     }
 
+    const EXT_ICONS = {
+      idle: '<svg class="ico ico-sm" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="11 2 3 13 10 13 9 22 17 11 10 11 11 2"/><path d="M18 5l-3 5h4l-3 5"/></svg>',
+      confirm: '<svg class="ico ico-sm" style="color:#d97706" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+      running: '<svg class="ico ico-sm ico-spin" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>'
+    };
+
     async function doOptimizeExtreme() {
       const btn = document.getElementById("btn-optimize-extreme");
+      const ico = document.getElementById("btn-opt-ext-ico");
       const txt = document.getElementById("btn-opt-ext-text");
       if (!extremeArmed) {
         extremeArmed = true;
         if (btn) btn.classList.add("btn-confirm");
+        if (ico) ico.innerHTML = EXT_ICONS.confirm;
         if (txt) txt.textContent = "再次点击确认全域清空（短暂换页）";
         clearTimeout(extremeConfirmTimer);
         extremeConfirmTimer = setTimeout(() => {
           extremeArmed = false;
           if (btn) btn.classList.remove("btn-confirm");
+          if (ico) ico.innerHTML = EXT_ICONS.idle;
           if (txt) txt.textContent = "强力全域释压（含服务与缓存）";
         }, 4000);
         return;
@@ -3357,6 +3368,7 @@ const dashboardHTML = `<!doctype html>
         btn.classList.remove("btn-confirm");
         btn.disabled = true;
       }
+      if (ico) ico.innerHTML = EXT_ICONS.running;
       if (txt) txt.textContent = "正在全域深度清空...";
       try {
         const data = await api("/api/optimize", "POST", { extreme: true });
@@ -3366,6 +3378,7 @@ const dashboardHTML = `<!doctype html>
         showToast("强力全域释压失败: " + e.message);
       } finally {
         if (btn) btn.disabled = false;
+        if (ico) ico.innerHTML = EXT_ICONS.idle;
         if (txt) txt.textContent = "强力全域释压（含服务与缓存）";
       }
     }
