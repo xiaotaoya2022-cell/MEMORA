@@ -132,6 +132,7 @@ type dashboardState struct {
 type toggleRequest struct {
 	Key     string `json:"key"`
 	Enabled bool   `json:"enabled"`
+	Value   string `json:"value,omitempty"`
 }
 
 // dashboardServer serves the loopback Control & Truth UI and JSON API.
@@ -623,6 +624,20 @@ func (d *dashboardServer) handleToggle(w http.ResponseWriter, r *http.Request) {
 				c.Thresholds.QuietOnFullscreen = req.Enabled
 			case "edge_horizon":
 				c.Actions.EdgeHorizon = req.Enabled
+			case "language":
+				val := strings.TrimSpace(req.Value)
+				if val == "" {
+					if req.Enabled {
+						val = "zh-CN"
+					} else {
+						val = "en-US"
+					}
+				}
+				if strings.HasPrefix(strings.ToLower(val), "en") {
+					c.Language = "en-US"
+				} else {
+					c.Language = "zh-CN"
+				}
 			default:
 				valid = false
 			}

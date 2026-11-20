@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="README_EN.md">English</a> | <strong>简体中文</strong>
+</p>
+
 <p align="center">
   <img src="assets/brand/cover.jpg" width="760" alt="MEMORA — Memory, Back to Its Nature.">
 </p>
@@ -214,6 +218,7 @@ MEMORA 不看"工作集"这个数字下结论。工作集包含共享页，同�
 - **双形态入口与贴边真相光尺**：双击桌面图标或直接运行 `memora.exe` 即拉起基于 WebView2 / Chromium 的无边框独立应用窗口（`Porcelain Daylight Bento` 设计语言 + `Bahnschrift + Segoe UI Variable + Noto Sans SC` 精密字体栈），支持按硬件自动适配物理内存五维拆解（虚拟化/开发机展示 `WSL2 / Vid 锁页`，常规主机自动切换为「后台静默驻留」剖析长时闲置进程）；点击右上角「轻量模式」隐藏后 18 秒自动回收 WebView2 渲染宿主与工作集内存。屏幕边缘附带 4px 贴边真相光尺（Edge Horizon），支持全屏四边自由拖拽换边与 120Hz 弹簧贴靠，悬停展示物理内存与 **CPU / GPU 实时核心温度**，单击圆环就地触发深度释压。
 - **三级智能动态调度与反扑自校准**：不再等到可用内存跌破 12% 才介入——一级巡航温和降级闲置后台进程并持续监测派生风暴；二级平衡轻修整长时闲置大工作集；三级高压降级至 `VeryLow` 并安全清理低优先级待机缓存与修改页；支持基于前后对比的反扑自校准 (`adaptive_cooldown`) 与 7 天滑动窗口空载基线漂移归因（Top 5 元凶），永不强杀任何第三方软件。
 - **诚实内核取证与底层可靠性**：修复 PDH 句柄与 `EnumWindows` 回调长期运行增长问题；对于内核驱动引用泄漏（僵尸 `EPROCESS`）与 `Vid` 锁页提供直连内核数据拆解、涉事驱动 `.sys` 匹配与派生源压制；托盘图标支持连续不闪退操作及实时自占内存汇报。
+- **多语言国际化支持 (i18n)**：调度中心与系统托盘深度支持简体中文 (`zh-CN`) 与英文 (`en-US`) 一键即时无缝切换与持久化存储，界面自适应零截断。
 - **开源协议与 Authenticode 代码签名**：基于 [MIT License](LICENSE) 开源；构建链路已内嵌权威 `RT_VERSION` / `RT_MANIFEST` 元数据与 SHA-256 Authenticode 数字签名体系（支持环境变量接入外部商业 OV/EV 证书，并内置项目自签名证书与安装向导自动导入 `Root` / `TrustedPublisher` 信任链），同时随版本发布 `SHA256SUMS` 与 `install-trust-cert.cmd` 方便离线一键预置信任或源码复现验证。
 
 ## 参与
@@ -222,13 +227,9 @@ MEMORA 不看"工作集"这个数字下结论。工作集包含共享页，同�
 
 ---
 
-## In English
+## English Documentation
 
-MEMORA is an open-source memory guardian engine for Windows. It targets abnormal memory growth, resource retention, kernel leaks, virtualization lockups, and declining memory efficiency during long-running sessions — not by frequent cleaning or forcing working sets down for a momentary dip, but by reading kernel-grade telemetry without privilege blind spots, finding where the abnormality actually lives (`SystemProcessInformation`, Pool Tags + loaded `.sys` attribution, kernel object leak detection, Hyper-V/WSL2 `Vid` locked pages, NUMA node balance), and managing user-space working sets only when genuinely needed.
-
-It is not meant to give a machine more memory than its hardware has. It is meant to let a machine explain and use the memory it already owns, properly.
-
-**Memory, Back to Its Nature. Always Watching. Never Intruding.**
+Please refer to the complete English documentation at [README_EN.md](README_EN.md).
 
 ---
 

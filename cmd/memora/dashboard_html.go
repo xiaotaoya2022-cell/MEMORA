@@ -1532,15 +1532,19 @@ const dashboardHTML = `<!doctype html>
     <header class="topbar" id="titlebar">
       <div class="topbar-left">
         <img class="topbar-logo" src="/logo.png" alt="MEMORA" />
-        <span class="topbar-title">MEMORA · 智能性能调度与内存真相中心</span>
+        <span class="topbar-title" id="topbar-title">MEMORA · 智能性能调度与内存真相中心</span>
         <span class="topbar-badge" id="ver-pill">v0.3.0</span>
         <span class="topbar-badge admin-ok" id="admin-pill">权限检测中</span>
       </div>
       <div class="topbar-right">
         <span class="topbar-badge" id="baseline-pill">空载基线守护中</span>
+        <button class="topbar-btn" id="btn-lang" onclick="toggleLanguage()" title="切换语言 / Switch Language" aria-label="Language Toggle">
+          <svg class="ico ico-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span id="lang-label">EN</span>
+        </button>
         <button class="topbar-btn" onclick="doExportReport()">
           <svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>导出 24h 诊断报告</span>
+          <span id="topbar-export-text">导出 24h 诊断报告</span>
         </button>
         <div class="win-controls">
           <div class="win-lite-wrap">
@@ -1590,7 +1594,7 @@ const dashboardHTML = `<!doctype html>
       <!-- Left Hero Column -->
       <aside class="card spot-surface hero-card">
         <div class="brand-row">
-          <div class="brand"><span class="brand-dot"></span>性能调度面板</div>
+          <div class="brand"><span class="brand-dot"></span><span id="hero-title-text">性能调度面板</span></div>
           <span class="ver-pill" id="mode-pill">智能调度</span>
         </div>
 
@@ -1602,7 +1606,7 @@ const dashboardHTML = `<!doctype html>
           </svg>
           <div class="gauge-center">
             <div class="gauge-pct val-tween" id="gauge-pct">--%</div>
-            <div class="gauge-sub">物理内存占用率</div>
+            <div class="gauge-sub" id="gauge-sub-text">物理内存占用率</div>
           </div>
         </div>
 
@@ -1613,7 +1617,7 @@ const dashboardHTML = `<!doctype html>
           </div>
           <div>
             <div class="val val-tween" id="hero-avail">--</div>
-            <div class="lbl">可用物理内存</div>
+            <div class="lbl" id="hero-avail-lbl">可用物理内存</div>
           </div>
         </div>
 
@@ -1628,7 +1632,7 @@ const dashboardHTML = `<!doctype html>
           <svg class="ico" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <span id="btn-opt-text">立即深度释压</span>
         </button>
-        <div class="btn-primary-hint">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
+        <div class="btn-primary-hint" id="btn-primary-hint-text">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
         <button class="btn-ghost" id="btn-optimize-extreme" onclick="doOptimizeExtreme()" title="手动全域清空所有空闲工作集、系统文件缓存与待机列表（极客模式，仅手动触发）">
           <span id="btn-opt-ext-ico" style="display:inline-flex"><svg class="ico ico-sm" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="11 2 3 13 10 13 9 22 17 11 10 11 11 2"/><path d="M18 5l-3 5h4l-3 5"/></svg></span>
           <span id="btn-opt-ext-text">强力全域释压（含服务与缓存）</span>
@@ -1649,7 +1653,7 @@ const dashboardHTML = `<!doctype html>
         <section class="card spot-surface overview-card">
           <div class="card-hdr">
             <div>
-              <div class="card-title">性能概览与物理内存真实拆解 <span class="card-sub" style="font-weight:400">(仅悬停用量彩条查看精细拆解)</span></div>
+              <div class="card-title"><span id="overview-title-text">性能概览与物理内存真实拆解</span> <span class="card-sub" id="overview-sub-text" style="font-weight:400">(仅悬停用量彩条查看精细拆解)</span></div>
               <div class="card-sub" id="commit-summary">提交与页面链表加载中...</div>
             </div>
             <div class="pill-row" style="width:auto;margin:0">
@@ -1680,17 +1684,17 @@ const dashboardHTML = `<!doctype html>
               <div class="legend-pct" id="bd-vid-pct">--</div>
             </div>
             <div class="legend-item spot-surface spot-sm" data-seg="zombie">
-              <div class="legend-top"><span class="dot" style="background:#ef4444"></span>僵尸 / 内核泄漏</div>
+              <div class="legend-top"><span class="dot" style="background:#ef4444"></span><span id="bd-zombie-label">僵尸 / 内核泄漏</span></div>
               <div class="legend-val val-tween" id="bd-zombie-val">--</div>
               <div class="legend-pct" id="bd-zombie-pct">--</div>
             </div>
             <div class="legend-item spot-surface spot-sm" data-seg="kernel">
-              <div class="legend-top"><span class="dot" style="background:#f59e0b"></span>常规内核 · 共享与缓存</div>
+              <div class="legend-top"><span class="dot" style="background:#f59e0b"></span><span id="bd-kernel-label">常规内核 · 共享与缓存</span></div>
               <div class="legend-val val-tween" id="bd-kernel-val">--</div>
               <div class="legend-pct" id="bd-kernel-pct">--</div>
             </div>
             <div class="legend-item spot-surface spot-sm" data-seg="avail">
-              <div class="legend-top"><span class="dot" style="background:#10b981"></span>可用内存(含待机)</div>
+              <div class="legend-top"><span class="dot" style="background:#10b981"></span><span id="bd-avail-label">可用内存(含待机)</span></div>
               <div class="legend-val val-tween" id="bd-avail-val">--</div>
               <div class="legend-pct" id="bd-avail-pct">--</div>
             </div>
@@ -1698,19 +1702,19 @@ const dashboardHTML = `<!doctype html>
 
           <div class="spark-grid">
             <div class="spark-box spot-surface spot-sm">
-              <div class="spark-hdr"><span>物理内存使用率</span><strong class="val-tween" id="sp-use-val">--</strong></div>
+              <div class="spark-hdr"><span id="sp-use-lbl">物理内存使用率</span><strong class="val-tween" id="sp-use-val">--</strong></div>
               <svg class="spark-svg" id="sp-use" viewBox="0 0 180 30" preserveAspectRatio="none"></svg>
             </div>
             <div class="spark-box spot-surface spot-sm">
-              <div class="spark-hdr"><span>应用独占工作集</span><strong class="val-tween" id="sp-apps-val">--</strong></div>
+              <div class="spark-hdr"><span id="sp-apps-lbl">应用独占工作集</span><strong class="val-tween" id="sp-apps-val">--</strong></div>
               <svg class="spark-svg" id="sp-apps" viewBox="0 0 180 30" preserveAspectRatio="none"></svg>
             </div>
             <div class="spark-box spot-surface spot-sm">
-              <div class="spark-hdr"><span>子进程派生速率</span><strong class="val-tween" id="sp-spawn-val">--</strong></div>
+              <div class="spark-hdr"><span id="sp-spawn-lbl">子进程派生速率</span><strong class="val-tween" id="sp-spawn-val">--</strong></div>
               <svg class="spark-svg" id="sp-spawn" viewBox="0 0 180 30" preserveAspectRatio="none"></svg>
             </div>
             <div class="spark-box spot-surface spot-sm">
-              <div class="spark-hdr"><span>可立即可用内存</span><strong class="val-tween" id="sp-avail-val">--</strong></div>
+              <div class="spark-hdr"><span id="sp-avail-lbl">可立即可用内存</span><strong class="val-tween" id="sp-avail-val">--</strong></div>
               <svg class="spark-svg" id="sp-avail" viewBox="0 0 180 30" preserveAspectRatio="none"></svg>
             </div>
           </div>
@@ -1722,28 +1726,33 @@ const dashboardHTML = `<!doctype html>
             <div class="tab-slider-thumb" id="tab-slider-thumb"></div>
             <button class="tab-btn active" data-tab="smart" onclick="switchTab('smart')">
               <svg class="ico ico-sm" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
-              <span>智能感知与动态调度</span>
+              <span id="tab-title-smart">智能感知与动态调度</span>
             </button>
             <button class="tab-btn" data-tab="truth" onclick="switchTab('truth')">
               <svg class="ico ico-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <span>真相归因与派生治理</span>
+              <span id="tab-title-truth">真相归因与派生治理</span>
               <span class="tab-count" id="tab-badge-truth">健康</span>
             </button>
             <button class="tab-btn" data-tab="managed" onclick="switchTab('managed')">
               <svg class="ico ico-sm" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-              <span>进程视图与日志</span>
+              <span id="tab-title-managed">进程视图与日志</span>
               <span class="tab-count" id="tab-badge-managed">0</span>
             </button>
             <button class="tab-btn" data-tab="ledger" onclick="switchTab('ledger')">
               <svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-              <span>长期静默账本</span>
+              <span id="tab-title-ledger">长期静默账本</span>
             </button>
           </div>
 
           <!-- Tab 1: Smart Switches -->
           <div class="tab-pane active" id="tab-smart">
             <div class="card-hdr" style="margin-bottom:2px">
-              <div class="card-sub">开关改动立即落盘生效；关闭「智能调度」或任意子开关时自动归还被约束进程的 OS 默认优先级</div>
+              <div class="card-sub" id="smart-hdr-sub">开关改动立即落盘生效；关闭「智能调度」或任意子开关时自动归还被约束进程的 OS 默认优先级</div>
+              <label style="font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="chk-softprio" onchange="toggleOpt('soft_memory_priority', this.checked)" />
+                <span id="chk-softprio-lbl">低内存优先级 (Low / VeryLow)</span>
+              </label>
+            </div>
               <label style="font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;">
                 <input type="checkbox" id="chk-softprio" onchange="toggleOpt('soft_memory_priority', this.checked)" />
                 低内存优先级 (Low / VeryLow)
@@ -1755,7 +1764,7 @@ const dashboardHTML = `<!doctype html>
               <div class="list-rows">
                 <div class="switch-row">
                   <div>
-                    <div class="switch-title"><span class="live-dot" id="dot-smart"></span>智能内存分级调度</div>
+                    <div class="switch-title"><span class="live-dot" id="dot-smart"></span><span id="sw-smart-lbl">智能内存分级调度</span></div>
                     <div class="switch-desc" id="desc-smart">根据可用物理内存比例动态切换 1~3 级调度策略...</div>
                   </div>
                   <label class="toggle"><input type="checkbox" id="sw-smart" onchange="toggleOpt('smart_memory_schedule', this.checked)" /><span class="slider"></span></label>
@@ -1763,7 +1772,7 @@ const dashboardHTML = `<!doctype html>
 
                 <div class="switch-row">
                   <div>
-                    <div class="switch-title"><span class="live-dot" id="dot-eco"></span>后台进程 CPU / EcoQoS 能效调度</div>
+                    <div class="switch-title"><span class="live-dot" id="dot-eco"></span><span id="sw-eco-lbl">后台进程 CPU / EcoQoS 能效调度</span></div>
                     <div class="switch-desc" id="desc-eco">为长期闲置后台进程开启 EcoQoS 能效核心与温和内存降档...</div>
                   </div>
                   <label class="toggle"><input type="checkbox" id="sw-eco" onchange="toggleOpt('eco_qos_background', this.checked)" /><span class="slider"></span></label>
@@ -1773,7 +1782,7 @@ const dashboardHTML = `<!doctype html>
                   <div>
                     <div class="switch-title">
                       <span class="live-dot" id="dot-storm"></span>
-                      <span>子进程派生风暴压制</span>
+                      <span id="sw-storm-lbl">子进程派生风暴压制</span>
                       <span class="pill pill-blue" id="pill-autolearn" style="padding:1px 7px;font-size:11px">自动压制名单中</span>
                     </div>
                     <div class="switch-desc" id="desc-storm">监控并压制高频创建短命子进程的后台宿主...</div>
@@ -1783,7 +1792,7 @@ const dashboardHTML = `<!doctype html>
 
                 <div class="switch-row">
                   <div>
-                    <div class="switch-title"><span class="live-dot" id="dot-standby"></span>待机缓存与修改页智能清洗</div>
+                    <div class="switch-title"><span class="live-dot" id="dot-standby"></span><span id="sw-standby-lbl">待机缓存与修改页智能清洗</span></div>
                     <div class="switch-desc" id="desc-standby">高压档按冷静期自动冲刷无用待机缓存...</div>
                   </div>
                   <label class="toggle"><input type="checkbox" id="sw-standby" onchange="toggleOpt('purge_standby', this.checked)" /><span class="slider"></span></label>
@@ -1791,7 +1800,7 @@ const dashboardHTML = `<!doctype html>
 
                 <div class="switch-row">
                   <div>
-                    <div class="switch-title"><span class="live-dot" id="dot-full"></span>全屏游戏 / 创作自动静音护航</div>
+                    <div class="switch-title"><span class="live-dot" id="dot-full"></span><span id="sw-full-lbl">全屏游戏 / 创作自动静音护航</span></div>
                     <div class="switch-desc" id="desc-full">检测到全屏游戏或渲染独占前景时自动暂停所有后台干扰...</div>
                   </div>
                   <label class="toggle"><input type="checkbox" id="sw-full" onchange="toggleOpt('quiet_on_fullscreen', this.checked)" /><span class="slider"></span></label>
@@ -1801,7 +1810,7 @@ const dashboardHTML = `<!doctype html>
                   <div>
                     <div class="switch-title">
                       <span class="live-dot" id="dot-edge"></span>
-                      <span>贴边真相光尺 (Edge Horizon)</span>
+                      <span id="sw-edge-lbl">贴边真相光尺 (Edge Horizon)</span>
                       <span class="pill pill-blue" id="pill-edge-side" style="padding:1px 7px;font-size:11px">左侧贴边</span>
                     </div>
                     <div class="switch-desc" id="desc-edge">平时仅保留 9px 瓷白极简贴边水位尺；鼠标悬停平滑展开 CPU/GPU 温度与深度释压圆环，全屏自动隐身（支持全屏自由拖拽与松手自动贴边）。</div>
@@ -1813,7 +1822,7 @@ const dashboardHTML = `<!doctype html>
 
             <div class="baseline-tip" id="baseline-explain">
               <svg class="ico ico-sm" style="margin-top:2px;color:#2563eb" viewBox="0 0 24 24"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
-              <div><b>空载基线守恒原理</b>：MEMORA 绝不触碰前台窗口链（浏览器/编辑器/语言服务/全屏应用），仅约束长期闲置的后台膨大工作集与恶意派生宿主，使日常使用贴近“空载基线 + 正常前台应用”的真实物理占用。</div>
+              <div id="baseline-explain-content"><b>空载基线守恒原理</b>：MEMORA 绝不触碰前台窗口链（浏览器/编辑器/语言服务/全屏应用），仅约束长期闲置的后台膨大工作集与恶意派生宿主，使日常使用贴近“空载基线 + 正常前台应用”的真实物理占用。</div>
             </div>
           </div>
 
@@ -1838,9 +1847,9 @@ const dashboardHTML = `<!doctype html>
                     <div>
                       <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px">
                         <svg class="ico ico-sm" style="color:#2563eb" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                        <span>自动压制名单与高频派生拦截</span>
+                        <span id="truth-storm-title-text">自动压制名单与高频派生拦截</span>
                       </div>
-                      <div class="card-sub">开启自动学习后，捕获到反复派生或泄漏宿主会自动记住并在重启后持续压制</div>
+                      <div class="card-sub" id="truth-storm-sub-text">开启自动学习后，捕获到反复派生或泄漏宿主会自动记住并在重启后持续压制</div>
                     </div>
                     <div style="display:flex;gap:5px;flex-wrap:wrap">
                       <button class="btn-sm btn-auto-on" id="btn-autolearn" onclick="toggleAutoLearn()">
@@ -1849,27 +1858,27 @@ const dashboardHTML = `<!doctype html>
                       </button>
                       <button class="btn-sm btn-danger" onclick="doSuppressStorms()">
                         <svg class="ico ico-xs" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                        <span>立即压制高频派生源</span>
+                        <span id="btn-suppress-storm-text">立即压制高频派生源</span>
                       </button>
                     </div>
                   </div>
                   <div class="chips" id="storm-chips"></div>
                   <div class="mini-add-row">
                     <input class="mini-input" id="inp-storm-name" placeholder="输入后台进程名加入压制名单，例如 xxx.exe" />
-                    <button class="btn-sm" onclick="addStormNameFromInput()">+ 加入名单</button>
+                    <button class="btn-sm" id="btn-add-storm-btn" onclick="addStormNameFromInput()">+ 加入名单</button>
                   </div>
                 </div>
 
                 <div class="sub-card spot-surface spot-sm" style="flex:1;min-height:170px;">
                   <div class="sub-card-hdr" style="padding:7px 10px;">
-                    <span style="font-weight:700;font-size:13px">高频子进程派生源（近 5 分钟）</span>
-                    <span class="card-sub">点击「+ 名单」可永久加入自动压制</span>
+                    <span id="spawner-card-title-text" style="font-weight:700;font-size:13px">高频子进程派生源（近 5 分钟）</span>
+                    <span class="card-sub" id="spawner-card-sub-text">点击「+ 名单」可永久加入自动压制</span>
                   </div>
                   <div class="cursor-list" id="spawner-table-wrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 6px;">
                     <div class="list-hover-cursor"></div>
                     <table>
                       <thead>
-                        <tr><th>PID</th><th>宿主进程</th><th class="num">派生次数</th><th>状态</th><th class="num">操作</th></tr>
+                        <tr id="th-row-spawners"><th>PID</th><th>宿主进程</th><th class="num">派生次数</th><th>状态</th><th class="num">操作</th></tr>
                       </thead>
                       <tbody id="tbl-spawners">
                         <tr><td colspan="5" style="color:var(--muted)">暂未观察到高频派生子进程宿主</td></tr>
@@ -1887,11 +1896,11 @@ const dashboardHTML = `<!doctype html>
               <div class="sub-card spot-surface">
                 <div class="sub-card-hdr">
                   <div>
-                    <span style="font-weight:700;font-size:13px">受管后台进程视图</span>
+                    <span id="managed-title-text" style="font-weight:700;font-size:13px">受管后台进程视图</span>
                     <span class="card-sub" id="managed-summary"> · 0 个受管</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:6px">
-                    <button class="btn-sm" onclick="restoreAll()" title="立即归还当前所有受管进程的正常优先级">全部释放</button>
+                    <button class="btn-sm" id="btn-restore-all-btn" onclick="restoreAll()" title="立即归还当前所有受管进程的正常优先级">全部释放</button>
                     <div style="position:relative;display:flex;align-items:center">
                       <svg class="ico ico-xs" style="position:absolute;left:8px;color:#94a3b8;pointer-events:none" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                       <input class="mini-input" id="proc-search" style="max-width:170px;padding-left:25px" placeholder="搜索进程名或 PID..." oninput="renderManagedFiltered()" />
@@ -1900,21 +1909,21 @@ const dashboardHTML = `<!doctype html>
                 </div>
                 <div class="whitelist-bar">
                   <div class="whitelist-bar-top">
-                    <span style="font-size:12px;font-weight:700;color:#047857">进程白名单（永不收紧/降档/压制）</span>
+                    <span id="whitelist-title-text" style="font-size:12px;font-weight:700;color:#047857">进程白名单（永不收紧/降档/压制）</span>
                     <input class="mini-input" id="inp-wl-name" style="flex:1;min-width:150px" placeholder="输入进程名加入白名单，如 OmniCode.exe" onkeydown="if(event.key==='Enter')addWhitelistFromInput()" />
-                    <button class="btn-sm" onclick="addWhitelistFromInput()">+ 添加白名单</button>
+                    <button class="btn-sm" id="btn-add-wl-btn" onclick="addWhitelistFromInput()">+ 添加白名单</button>
                   </div>
                   <div class="whitelist-chips" id="whitelist-chips"></div>
                 </div>
                 <div class="proc-toolbar" id="proc-toolbar">
                   <div class="filter-slider-thumb" id="filter-slider-thumb"></div>
-                  <button class="filter-pill active" data-filter="all" onclick="setProcFilter('all')">全部</button>
+                  <button class="filter-pill active" data-filter="all" onclick="setProcFilter('all')"><span id="flt-lbl-all">全部</span></button>
                   <button class="filter-pill" data-filter="storm" onclick="setProcFilter('storm')">
                     <svg class="ico ico-xs" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                    <span>风暴压制中</span>
+                    <span id="flt-lbl-storm">风暴压制中</span>
                   </button>
-                  <button class="filter-pill" data-filter="verylow" onclick="setProcFilter('verylow')">VeryLow 内存档</button>
-                  <button class="filter-pill" data-filter="low" onclick="setProcFilter('low')">Low 内存档</button>
+                  <button class="filter-pill" data-filter="verylow" onclick="setProcFilter('verylow')"><span id="flt-lbl-verylow">VeryLow 内存档</span></button>
+                  <button class="filter-pill" data-filter="low" onclick="setProcFilter('low')"><span id="flt-lbl-low">Low 内存档</span></button>
                 </div>
                 <div class="proc-list cursor-list" id="proc-custom-list">
                   <div class="list-hover-cursor"></div>
@@ -1925,12 +1934,12 @@ const dashboardHTML = `<!doctype html>
               <div class="sub-card spot-surface">
                 <div class="sub-card-hdr">
                   <div>
-                    <div style="font-weight:700;font-size:13px">实时调度与压制动作日志</div>
-                    <div class="card-sub">最近 30 条真实动作（可导出完整 24h JSON）</div>
+                    <div id="journal-title-text" style="font-weight:700;font-size:13px">实时调度与压制动作日志</div>
+                    <div class="card-sub" id="journal-sub-text">最近 30 条真实动作（可导出完整 24h JSON）</div>
                   </div>
                   <button class="btn-sm" onclick="doExportReport()">
                     <svg class="ico ico-xs" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    <span>导出 JSON</span>
+                    <span id="btn-export-json-text">导出 JSON</span>
                   </button>
                 </div>
                 <div class="journal-list cursor-list" id="journal-list">
@@ -1945,42 +1954,42 @@ const dashboardHTML = `<!doctype html>
           <div class="tab-pane" id="tab-ledger">
             <div class="ledger-grid">
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">累计静默守护</div>
+                <div class="k" id="lg-k-hours">累计静默守护</div>
                 <div class="v" id="lg-hours">--</div>
-                <div class="s">后台低调运行总时长</div>
+                <div class="s" id="lg-s-hours">后台低调运行总时长</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">系统克制率</div>
+                <div class="k" id="lg-k-restraint">系统克制率</div>
                 <div class="v" id="lg-restraint">--</div>
-                <div class="s">绝不乱杀、按需出手的采样比例</div>
+                <div class="s" id="lg-s-restraint">绝不乱杀、按需出手的采样比例</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">累计动态调度释放</div>
+                <div class="k" id="lg-k-dyn">累计动态调度释放</div>
                 <div class="v" id="lg-dyn">--</div>
-                <div class="s">多级工作集收敛累计效益</div>
+                <div class="s" id="lg-s-dyn">多级工作集收敛累计效益</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">高压救急 / 工作集收紧</div>
+                <div class="k" id="lg-k-peaks">高压救急 / 工作集收紧</div>
                 <div class="v" id="lg-peaks">--</div>
-                <div class="s">在内存告警边缘救回流畅度</div>
+                <div class="s" id="lg-s-peaks">在内存告警边缘救回流畅度</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">全屏 / 游戏静音避让</div>
+                <div class="k" id="lg-k-full">全屏 / 游戏静音避让</div>
                 <div class="v" id="lg-full">--</div>
-                <div class="s">前台独占娱乐创作零打扰</div>
+                <div class="s" id="lg-s-full">前台独占娱乐创作零打扰</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">捕获并收敛孤儿链</div>
+                <div class="k" id="lg-k-orphan">捕获并收敛孤儿链</div>
                 <div class="v" id="lg-orphan">--</div>
-                <div class="s">父进程已退出却残留后台的进程</div>
+                <div class="s" id="lg-s-orphan">父进程已退出却残留后台的进程</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">压制派生风暴宿主</div>
+                <div class="k" id="lg-k-storm">压制派生风暴宿主</div>
                 <div class="v" id="lg-storm">--</div>
-                <div class="s">已阻断子进程狂刷句柄</div>
+                <div class="s" id="lg-s-storm">已阻断子进程狂刷句柄</div>
               </div>
               <div class="ledger-stat spot-surface spot-sm">
-                <div class="k">内核级异常目击次数</div>
+                <div class="k" id="lg-k-leak">内核级异常目击次数</div>
                 <div class="v" id="lg-leak">--</div>
                 <div class="s" id="lg-leak-desc">历史僵尸内核对象追踪</div>
               </div>
@@ -1990,8 +1999,8 @@ const dashboardHTML = `<!doctype html>
               <div class="sub-card spot-surface" style="min-height:135px;">
                 <div class="sub-card-hdr" style="padding:7px 11px;">
                   <div>
-                    <div style="font-weight:700;font-size:13px">7天本机空载基线守恒对比</div>
-                    <div class="card-sub">验证连续运行后空载真实物理占用是否守恒</div>
+                    <div id="baseline-card-title-text" style="font-weight:700;font-size:13px">7天本机空载基线守恒对比</div>
+                    <div class="card-sub" id="baseline-card-sub-text">验证连续运行后空载真实物理占用是否守恒</div>
                   </div>
                   <span class="pill pill-slate" id="baseline-drift-badge">统计中</span>
                 </div>
@@ -1999,7 +2008,7 @@ const dashboardHTML = `<!doctype html>
                   <div class="list-hover-cursor"></div>
                   <table>
                     <thead>
-                      <tr><th>日期</th><th class="num">最低真实占用</th><th class="num">最低私有提交</th><th class="num">虚机/容器锁页</th><th class="num">内核 Process 峰值</th></tr>
+                      <tr id="th-row-baselines"><th>日期</th><th class="num">最低真实占用</th><th class="num">最低私有提交</th><th class="num">虚机/容器锁页</th><th class="num">内核 Process 峰值</th></tr>
                     </thead>
                     <tbody id="tbl-baselines">
                       <tr><td colspan="5" style="color:var(--muted)">暂无跨天记录</td></tr>
@@ -2011,16 +2020,16 @@ const dashboardHTML = `<!doctype html>
               <div class="sub-card spot-surface" style="min-height:135px;">
                 <div class="sub-card-hdr" style="padding:7px 11px;">
                   <div>
-                    <div style="font-weight:700;font-size:13px">后台虚高膨胀罪魁榜 Top 5</div>
-                    <div class="card-sub">基于本地调度账本统计虚高膨胀与实测回收归因</div>
+                    <div id="culprit-card-title-text" style="font-weight:700;font-size:13px">后台虚高膨胀罪魁榜 Top 5</div>
+                    <div class="card-sub" id="culprit-card-sub-text">基于本地调度账本统计虚高膨胀与实测回收归因</div>
                   </div>
-                  <span class="pill pill-blue">真实归因</span>
+                  <span class="pill pill-blue" id="culprit-badge-text">真实归因</span>
                 </div>
                 <div class="cursor-list" id="culprit-table-wrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 10px;">
                   <div class="list-hover-cursor"></div>
                   <table>
                     <thead>
-                      <tr><th>后台进程</th><th class="num">收敛</th><th class="num">峰值工作集</th><th class="num">累计省下</th><th>策略</th></tr>
+                      <tr id="th-row-culprits"><th>后台进程</th><th class="num">收敛</th><th class="num">峰值工作集</th><th class="num">累计省下</th><th>策略</th></tr>
                     </thead>
                     <tbody id="tbl-culprits">
                       <tr><td colspan="5" style="color:var(--muted)">暂无后台膨胀收敛归因记录</td></tr>
@@ -2044,6 +2053,461 @@ const dashboardHTML = `<!doctype html>
     let latestState = null;
     let procFilter = "all";
     let windowMaximized = false;
+    let currentLang = localStorage.getItem("memora_lang") || ((navigator.language && navigator.language.toLowerCase().startsWith("en")) ? "en-US" : "zh-CN");
+
+    const I18N = {
+      "zh-CN": {
+        topbar_title: "MEMORA · 智能性能调度与内存真相中心",
+        admin_ok: "管理员权限就绪",
+        admin_std: "标准权限 (提权将触发 UAC)",
+        admin_checking: "权限检测中",
+        baseline_guarding: "空载基线守护中",
+        baseline_managed: "空载基线守护 · 托管 {n} 个",
+        baseline_reboot: "待重启释放 {size} 历史内核残留",
+        baseline_closed: "调度已关闭 · 仅真实观测",
+        export_report: "导出 24h 诊断报告",
+        tip_min_title: "收起至任务栏",
+        tip_min_sub: "最小化窗口至底部任务栏，保持主界面常驻就绪",
+        tip_max_expand: "全屏展开视图",
+        tip_max_restore: "还原窗口尺寸",
+        tip_max_expand_sub: "最大化展开工作区，获得更充裕的进程与账本视野",
+        tip_max_restore_sub: "恢复默认悬浮桌面尺寸",
+        tip_lite_title: "轻量模式",
+        tip_lite_sub: "收起主窗至托盘与贴边光尺，闲置自动释放界面内存",
+        hero_title: "性能调度面板",
+        mode_guard_on: "智能调度中",
+        mode_guard_off: "已关闭",
+        mem_usage_title: "物理内存占用率",
+        hero_used_lbl: "已用 / 总量 {tot}",
+        avail_phys_mem: "可用物理内存",
+        calculating_tier: "计算档位中...",
+        detecting_game: "前沿检测中",
+        game_quieting: "{label}静音护航中",
+        game_ready: "非全屏 · 调度就绪",
+        family_protected: "前沿链受保护 {n} 个",
+        self_stats: "自身 {ws} · {hd} 句柄",
+        btn_opt_text: "立即深度释压",
+        btn_opt_hint: "安全收紧闲置后台/服务工作集、文件缓存与低优待机页",
+        btn_opt_ext_text: "强力全域释压（含服务与缓存）",
+        mode_btn_guard: "智能调度",
+        mode_btn_close: "关闭",
+        sync_connecting: "正在连接本地真实状态源...",
+        sync_note: "最近采样 {time} · 每 2.5 秒实时同步",
+        overview_title: "性能概览与物理内存真实拆解",
+        overview_sub: "(仅悬停用量彩条查看精细拆解)",
+        commit_loading: "提交与页面链表加载中...",
+        active_procs: "活跃进程 {n} 个",
+        bd_apps_single: "应用独占工作集",
+        bd_apps_active: "前台与活跃独占",
+        bd_vid_label: "WSL2 / Vid 锁页",
+        bd_idle_label: "后台静默驻留",
+        bd_zombie_label: "僵尸 / 内核泄漏",
+        bd_kernel_label: "常规内核 · 共享与缓存",
+        bd_avail_label: "可用内存(含待机)",
+        bd_pct_app_single: "% · 程序真实独占",
+        bd_pct_app_active: "% · 前沿/系统真实独占",
+        bd_pct_vid: "% · 虚机锁定",
+        bd_pct_idle: "% · 非前沿后台驻留",
+        bd_pct_zombie: "% · 内核对象/PTE",
+        bd_pct_kernel: "% · Pool+共享映射",
+        bd_pct_avail: "% · 系统随时分配",
+        sp_use_title: "物理内存使用率",
+        sp_apps_title: "应用独占工作集",
+        sp_spawn_title: "子进程派生速率",
+        sp_avail_title: "可立即可用内存",
+        tab_smart: "智能感知与动态调度",
+        tab_truth: "真相归因与派生治理",
+        tab_managed: "进程视图与日志",
+        tab_ledger: "长期静默账本",
+        badge_truth_healthy: "健康",
+        badge_truth_alerts: "{n} 项告警",
+        smart_hdr_sub: "开关改动立即落盘生效；关闭「智能调度」或任意子开关时自动归还被约束进程的 OS 默认优先级",
+        chk_softprio: "低内存优先级 (Low / VeryLow)",
+        sw_smart_title: "智能内存分级调度",
+        sw_eco_title: "后台进程 CPU / EcoQoS 能效调度",
+        sw_storm_title: "子进程派生风暴压制",
+        sw_standby_title: "待机缓存与修改页智能清洗",
+        sw_full_title: "全屏游戏 / 创作自动静音护航",
+        sw_edge_title: "贴边真相光尺 (Edge Horizon)",
+        pill_autolearn_on: "自动名单学习中",
+        pill_autolearn_off: "手动名单模式",
+        pill_edge_hidden: "已隐藏",
+        pill_edge_left: "左侧贴边",
+        pill_edge_right: "右侧贴边",
+        baseline_explain: "<b>空载基线守恒原理</b>：MEMORA 绝不触碰前台窗口链（浏览器/编辑器/语言服务/全屏应用），仅约束长期闲置的后台膨大工作集与恶意派生宿主，使日常使用贴近“空载基线 + 正常前台应用”的真实物理占用。",
+        truth_storm_title: "自动压制名单与高频派生拦截",
+        truth_storm_sub: "开启自动学习后，捕获到反复派生或泄漏宿主会自动记住并在重启后持续压制",
+        btn_autolearn_on: "自动拉入压制名单：已开启",
+        btn_autolearn_off: "自动拉入压制名单：已关闭",
+        btn_suppress_storms: "立即压制高频派生源",
+        inp_storm_ph: "输入后台进程名加入压制名单，例如 xxx.exe",
+        btn_add_storm: "+ 加入名单",
+        spawner_card_title: "高频子进程派生源（近 5 分钟）",
+        spawner_card_sub: "点击「+ 名单」可永久加入自动压制",
+        th_pid: "PID",
+        th_host_proc: "宿主进程",
+        th_spawn_count: "派生次数",
+        th_status: "状态",
+        th_action: "操作",
+        spawner_empty: "暂未观察到高频派生子进程宿主",
+        managed_title: "受管后台进程视图",
+        managed_summary: " · {n} 个受管",
+        btn_restore_all: "全部释放",
+        inp_search_ph: "搜索进程名或 PID...",
+        whitelist_title: "进程白名单（永不收紧/降档/压制）",
+        inp_wl_ph: "输入进程名加入白名单，如 OmniCode.exe",
+        btn_add_wl: "+ 添加白名单",
+        filter_all: "全部",
+        filter_storm: "风暴压制中",
+        filter_verylow: "VeryLow 内存档",
+        filter_low: "Low 内存档",
+        journal_title: "实时调度与压制动作日志",
+        journal_sub: "最近 30 条真实动作（可导出完整 24h JSON）",
+        btn_export_json: "导出 JSON",
+        lg_hours_k: "累计静默守护",
+        lg_hours_s: "后台低调运行总时长",
+        lg_restraint_k: "系统克制率",
+        lg_restraint_s: "绝不乱杀、按需出手的采样比例",
+        lg_dyn_k: "累计动态调度释放",
+        lg_dyn_s: "多级工作集收敛累计效益",
+        lg_peaks_k: "高压救急 / 工作集收紧",
+        lg_peaks_s: "在内存告警边缘救回流畅度",
+        lg_full_k: "全屏 / 游戏静音避让",
+        lg_full_s: "前台独占娱乐创作零打扰",
+        lg_orphan_k: "捕获并收敛孤儿链",
+        lg_orphan_s: "父进程已退出却残留后台的进程",
+        lg_storm_k: "压制派生风暴宿主",
+        lg_storm_s: "已阻断子进程狂刷句柄",
+        lg_leak_k: "内核级异常目击次数",
+        lg_leak_s: "历史僵尸内核对象追踪",
+        baseline_card_title: "7天本机空载基线守恒对比",
+        baseline_card_sub: "验证连续运行后空载真实物理占用是否守恒",
+        baseline_drift_calc: "统计中",
+        th_date: "日期",
+        th_min_used: "最低真实占用",
+        th_min_commit: "最低私有提交",
+        th_vm_locked: "虚机/容器锁页",
+        th_eprocess_peak: "内核 Process 峰值",
+        baseline_empty: "暂无跨天记录",
+        culprit_card_title: "后台虚高膨胀罪魁榜 Top 5",
+        culprit_card_sub: "基于本地调度账本统计虚高膨胀与实测回收归因",
+        culprit_badge: "真实归因",
+        th_bg_proc: "后台进程",
+        th_trim_hits: "收敛",
+        th_peak_ws: "峰值工作集",
+        th_saved_tot: "累计省下",
+        th_strategy: "策略",
+        culprit_empty: "暂无后台膨胀收敛归因记录",
+        strat_rebound: "防反扑软抑",
+        strat_trim: "分级收紧",
+        strat_storm: "风暴压制",
+        strat_managed: "能效托管"
+      },
+      "en-US": {
+        topbar_title: "MEMORA · Performance Dispatch & Memory Truth Center",
+        admin_ok: "Administrator Privileges Ready",
+        admin_std: "Standard Privileges (Elevation prompts UAC)",
+        admin_checking: "Checking Privileges",
+        baseline_guarding: "Idle Baseline Guarding",
+        baseline_managed: "Idle Baseline Guarding · {n} managed",
+        baseline_reboot: "Reboot pending to free {size} kernel residues",
+        baseline_closed: "Dispatch Off · Observation Only",
+        export_report: "Export 24h Diagnostic Report",
+        tip_min_title: "Minimize to Taskbar",
+        tip_min_sub: "Keep window on taskbar, ready for instant access",
+        tip_max_expand: "Full Workspace View",
+        tip_max_restore: "Restore Window Size",
+        tip_max_expand_sub: "Maximize workspace for broad process and ledger visibility",
+        tip_max_restore_sub: "Restore floating desktop dimensions",
+        tip_lite_title: "Lite Mode",
+        tip_lite_sub: "Fold to tray & Edge Horizon, automatically frees UI RAM when idle",
+        hero_title: "Performance Dispatch",
+        mode_guard_on: "Smart Dispatching",
+        mode_guard_off: "Disabled",
+        mem_usage_title: "Physical RAM Usage",
+        hero_used_lbl: "Used / Total {tot}",
+        avail_phys_mem: "Available Physical RAM",
+        calculating_tier: "Calculating tier...",
+        detecting_game: "Detecting foreground...",
+        game_quieting: "{label} Quiet Escort Active",
+        game_ready: "Windowed · Dispatch Ready",
+        family_protected: "Foreground Chain Protected: {n}",
+        self_stats: "Self {ws} · {hd} handles",
+        btn_opt_text: "Deep Pressure Relief Now",
+        btn_opt_hint: "Safely trims idle background/service working sets, file cache & standby pages",
+        btn_opt_ext_text: "Aggressive Global Relief (Services & Cache)",
+        mode_btn_guard: "Smart Dispatch",
+        mode_btn_close: "Off",
+        sync_connecting: "Connecting to local kernel telemetry...",
+        sync_note: "Latest sample {time} · Sync every 2.5s",
+        overview_title: "Telemetry Overview & Physical RAM Breakdown",
+        overview_sub: "(Hover over the colored bar for detailed analysis)",
+        commit_loading: "Loading commit and page lists...",
+        active_procs: "Active Processes: {n}",
+        bd_apps_single: "App Private Working Set",
+        bd_apps_active: "Foreground & Active Exclusive",
+        bd_vid_label: "WSL2 / Vid Locked Pages",
+        bd_idle_label: "Idle Background Resident",
+        bd_zombie_label: "Zombie / Kernel Leaks",
+        bd_kernel_label: "Kernel Drivers · Shared & Cache",
+        bd_avail_label: "Available RAM (w/ Standby)",
+        bd_pct_app_single: "% · Private exclusive",
+        bd_pct_app_active: "% · Foreground/System exclusive",
+        bd_pct_vid: "% · Hyper-V locked",
+        bd_pct_idle: "% · Idle non-foreground",
+        bd_pct_zombie: "% · Kernel objects/PTE",
+        bd_pct_kernel: "% · Pool+shared maps",
+        bd_pct_avail: "% · Ready for immediate allocation",
+        sp_use_title: "RAM Utilization",
+        sp_apps_title: "App Private Working Set",
+        sp_spawn_title: "Spawn Storm Rate",
+        sp_avail_title: "Immediate Available RAM",
+        tab_smart: "Smart Sensing & Dispatch",
+        tab_truth: "Root Attribution & Storms",
+        tab_managed: "Processes & Journal",
+        tab_ledger: "Quiet Ledger",
+        badge_truth_healthy: "Healthy",
+        badge_truth_alerts: "{n} Alerts",
+        smart_hdr_sub: "Changes take effect immediately; turning off Smart Dispatch restores processes to OS default priority",
+        chk_softprio: "Low RAM Priority (Low / VeryLow)",
+        sw_smart_title: "Tiered Dynamic Scheduling",
+        sw_eco_title: "Background CPU / EcoQoS Efficiency",
+        sw_storm_title: "Spawn Storm Suppression",
+        sw_standby_title: "Standby Cache & Modified Page Flush",
+        sw_full_title: "Fullscreen Game / Work Quiet Escort",
+        sw_edge_title: "Edge Horizon (Docked Light Ruler)",
+        pill_autolearn_on: "Auto-Learning Storm List",
+        pill_autolearn_off: "Manual List Mode",
+        pill_edge_hidden: "Hidden",
+        pill_edge_left: "Left Docked",
+        pill_edge_right: "Right Docked",
+        baseline_explain: "<b>Idle Baseline Conservation</b>: MEMORA strictly avoids foreground chains (browsers, IDEs, language servers, fullscreen apps), managing only long-idle bloat and storm spawners to keep daily usage anchored to true baseline levels.",
+        truth_storm_title: "Auto-Suppression List & Storm Interception",
+        truth_storm_sub: "With auto-learning enabled, repeatedly spawning or leaking hosts are permanently suppressed across restarts",
+        btn_autolearn_on: "Auto-Learn List: Enabled",
+        btn_autolearn_off: "Auto-Learn List: Disabled",
+        btn_suppress_storms: "Suppress High-Freq Spawners Now",
+        inp_storm_ph: "Enter process name to suppress, e.g., xxx.exe",
+        btn_add_storm: "+ Add to List",
+        spawner_card_title: "High-Frequency Spawners (Last 5 mins)",
+        spawner_card_sub: "Click '+ List' to permanently add to suppression list",
+        th_pid: "PID",
+        th_host_proc: "Host Process",
+        th_spawn_count: "Spawns",
+        th_status: "Status",
+        th_action: "Action",
+        spawner_empty: "No high-frequency child spawners observed",
+        managed_title: "Managed Background Processes",
+        managed_summary: " · {n} managed",
+        btn_restore_all: "Release All",
+        inp_search_ph: "Search process or PID...",
+        whitelist_title: "Process Whitelist (Never trimmed, demoted, or suppressed)",
+        inp_wl_ph: "Enter process name to whitelist, e.g. OmniCode.exe",
+        btn_add_wl: "+ Add Whitelist",
+        filter_all: "All",
+        filter_storm: "Storm Suppressed",
+        filter_verylow: "VeryLow Tier",
+        filter_low: "Low Tier",
+        journal_title: "Real-time Dispatch & Suppression Journal",
+        journal_sub: "Recent 30 real actions (full 24h JSON export available)",
+        btn_export_json: "Export JSON",
+        lg_hours_k: "Quiet Stewardship",
+        lg_hours_s: "Total silent runtime in background",
+        lg_restraint_k: "System Restraint Rate",
+        lg_restraint_s: "Sampling ratio with zero intrusion or kill",
+        lg_dyn_k: "Dynamic Scheduled Reclaim",
+        lg_dyn_s: "Cumulative multi-tier working set savings",
+        lg_peaks_k: "Pressure Saves / Trim Actions",
+        lg_peaks_s: "Safely relieved under tight memory thresholds",
+        lg_full_k: "Fullscreen Quiet Skips",
+        lg_full_s: "Zero-interference during games & creation",
+        lg_orphan_k: "Orphan Chains Converged",
+        lg_orphan_s: "Remnants whose parent processes exited",
+        lg_storm_k: "Storm Spawners Suppressed",
+        lg_storm_s: "Blocked recursive handle-flooding hosts",
+        lg_leak_k: "Kernel Anomalies Witnessed",
+        lg_leak_s: "Historical zombie kernel object observations",
+        baseline_card_title: "7-Day Idle Baseline Conservation",
+        baseline_card_sub: "Verifying whether idle physical footprint remains conserved over time",
+        baseline_drift_calc: "Calculating",
+        th_date: "Date",
+        th_min_used: "Min Real Used",
+        th_min_commit: "Min Private Commit",
+        th_vm_locked: "VM / Container Locked",
+        th_eprocess_peak: "Kernel Process Peak",
+        baseline_empty: "No multi-day records available yet",
+        culprit_card_title: "Top 5 Background Bloat Culprits",
+        culprit_card_sub: "Real attribution based on local dispatch ledger and verified savings",
+        culprit_badge: "Real Attribution",
+        th_bg_proc: "Background Process",
+        th_trim_hits: "Hits",
+        th_peak_ws: "Peak WS",
+        th_saved_tot: "Total Saved",
+        th_strategy: "Strategy",
+        culprit_empty: "No bloat attribution records yet",
+        strat_rebound: "Soft Anti-Rebound",
+        strat_trim: "Tiered Trim",
+        strat_storm: "Storm Throttled",
+        strat_managed: "EcoQoS Managed"
+      }
+    };
+
+    function t(key, params) {
+      const dict = I18N[currentLang] || I18N["zh-CN"];
+      let str = dict[key] != null ? dict[key] : (I18N["zh-CN"][key] != null ? I18N["zh-CN"][key] : key);
+      if (params) {
+        for (const k in params) {
+          str = str.replace(new RegExp("{" + k + "}", "g"), params[k]);
+        }
+      }
+      return str;
+    }
+
+    function translateSmartLabel(lbl) {
+      if (!lbl) return t("calculating_tier");
+      if (currentLang === "en-US") {
+        if (lbl.indexOf("四级") >= 0 || lbl.indexOf("紧急") >= 0) return "Tier 4 · Critical Rescue";
+        if (lbl.indexOf("三级") >= 0 || lbl.indexOf("高压") >= 0) return "Tier 3 · High Pressure Relief";
+        if (lbl.indexOf("二级") >= 0 || lbl.indexOf("平衡") >= 0) return "Tier 2 · Balanced Schedule";
+        if (lbl.indexOf("一级") >= 0 || lbl.indexOf("巡航") >= 0) return "Tier 1 · Light Cruise";
+      }
+      return lbl;
+    }
+
+    function translateFullscreenLabel(lbl) {
+      if (!lbl) return "Fullscreen";
+      if (currentLang === "en-US") {
+        if (lbl.indexOf("全屏") >= 0) return "Fullscreen";
+        if (lbl.indexOf("游戏") >= 0) return "Game";
+      }
+      return lbl;
+    }
+
+    function translateStrategy(st) {
+      if (!st) return "";
+      if (currentLang === "en-US") {
+        if (st.indexOf("防反扑") >= 0) return t("strat_rebound");
+        if (st.indexOf("分级") >= 0) return t("strat_trim");
+        if (st.indexOf("风暴") >= 0) return t("strat_storm");
+        if (st.indexOf("托管") >= 0) return t("strat_managed");
+      }
+      return st;
+    }
+
+    function applyStaticI18N() {
+      document.documentElement.lang = currentLang;
+      const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+      const setHTML = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
+
+      setTxt("lang-label", currentLang === "zh-CN" ? "EN" : "中文");
+      setTxt("topbar-title", t("topbar_title"));
+      setTxt("topbar-export-text", t("export_report"));
+      setTxt("hero-title-text", t("hero_title"));
+      setTxt("gauge-sub-text", t("mem_usage_title"));
+      setTxt("hero-avail-lbl", t("avail_phys_mem"));
+      setTxt("btn-opt-text", t("btn_opt_text"));
+      setTxt("btn-primary-hint-text", t("btn_opt_hint"));
+      setTxt("btn-opt-ext-text", t("btn_opt_ext_text"));
+      setTxt("mode-guard", t("mode_btn_guard"));
+      setTxt("mode-observe", t("mode_btn_close"));
+      setTxt("overview-title-text", t("overview_title"));
+      setTxt("overview-sub-text", t("overview_sub"));
+
+      setTxt("sp-use-lbl", t("sp_use_title"));
+      setTxt("sp-apps-lbl", t("sp_apps_title"));
+      setTxt("sp-spawn-lbl", t("sp_spawn_title"));
+      setTxt("sp-avail-lbl", t("sp_avail_title"));
+
+      setTxt("tab-title-smart", t("tab_smart"));
+      setTxt("tab-title-truth", t("tab_truth"));
+      setTxt("tab-title-managed", t("tab_managed"));
+      setTxt("tab-title-ledger", t("tab_ledger"));
+
+      setTxt("smart-hdr-sub", t("smart_hdr_sub"));
+      setTxt("chk-softprio-lbl", t("chk_softprio"));
+      setTxt("sw-smart-lbl", t("sw_smart_title"));
+      setTxt("sw-eco-lbl", t("sw_eco_title"));
+      setTxt("sw-storm-lbl", t("sw_storm_title"));
+      setTxt("sw-standby-lbl", t("sw_standby_title"));
+      setTxt("sw-full-lbl", t("sw_full_title"));
+      setTxt("sw-edge-lbl", t("sw_edge_title"));
+      setHTML("baseline-explain-content", t("baseline_explain"));
+
+      setTxt("truth-storm-title-text", t("truth_storm_title"));
+      setTxt("truth-storm-sub-text", t("truth_storm_sub"));
+      setTxt("btn-suppress-storm-text", t("btn_suppress_storms"));
+      const inpStorm = document.getElementById("inp-storm-name");
+      if (inpStorm) inpStorm.placeholder = t("inp_storm_ph");
+      setTxt("btn-add-storm-btn", t("btn_add_storm"));
+      setTxt("spawner-card-title-text", t("spawner-card-title-text"));
+      setTxt("spawner-card-sub-text", t("spawner_card_sub"));
+
+      const thSpawners = document.getElementById("th-row-spawners");
+      if (thSpawners) {
+        thSpawners.innerHTML = "<th>" + t("th_pid") + "</th><th>" + t("th_host_proc") + "</th><th class=\"num\">" + t("th_spawn_count") + "</th><th>" + t("th_status") + "</th><th class=\"num\">" + t("th_action") + "</th>";
+      }
+
+      setTxt("managed-title-text", t("managed_title"));
+      setTxt("btn-restore-all-btn", t("btn_restore_all"));
+      const procSearch = document.getElementById("proc-search");
+      if (procSearch) procSearch.placeholder = t("inp_search_ph");
+      setTxt("whitelist-title-text", t("whitelist_title"));
+      const inpWl = document.getElementById("inp-wl-name");
+      if (inpWl) inpWl.placeholder = t("inp_wl_ph");
+      setTxt("btn-add-wl-btn", t("btn_add_wl"));
+
+      setTxt("flt-lbl-all", t("filter_all"));
+      setTxt("flt-lbl-storm", t("filter_storm"));
+      setTxt("flt-lbl-verylow", t("filter_verylow"));
+      setTxt("flt-lbl-low", t("filter_low"));
+
+      setTxt("journal-title-text", t("journal_title"));
+      setTxt("journal-sub-text", t("journal_sub"));
+      setTxt("btn-export-json-text", t("btn_export_json"));
+
+      setTxt("lg-k-hours", t("lg_hours_k"));
+      setTxt("lg-s-hours", t("lg_hours_s"));
+      setTxt("lg-k-restraint", t("lg_restraint_k"));
+      setTxt("lg-s-restraint", t("lg_restraint_s"));
+      setTxt("lg-k-dyn", t("lg_dyn_k"));
+      setTxt("lg-s-dyn", t("lg_dyn_s"));
+      setTxt("lg-k-peaks", t("lg_peaks_k"));
+      setTxt("lg-s-peaks", t("lg_peaks_s"));
+      setTxt("lg-k-full", t("lg_full_k"));
+      setTxt("lg-s-full", t("lg_full_s"));
+      setTxt("lg-k-orphan", t("lg_orphan_k"));
+      setTxt("lg-s-orphan", t("lg_orphan_s"));
+      setTxt("lg-k-storm", t("lg_storm_k"));
+      setTxt("lg-s-storm", t("lg_storm_s"));
+      setTxt("lg-k-leak", t("lg_leak_k"));
+      setTxt("lg-leak-desc", t("lg_leak_s"));
+
+      setTxt("baseline-card-title-text", t("baseline_card_title"));
+      setTxt("baseline-card-sub-text", t("baseline_card_sub"));
+      const thBaselines = document.getElementById("th-row-baselines");
+      if (thBaselines) {
+        thBaselines.innerHTML = "<th>" + t("th_date") + "</th><th class=\"num\">" + t("th_min_used") + "</th><th class=\"num\">" + t("th_min_commit") + "</th><th class=\"num\">" + t("th_vm_locked") + "</th><th class=\"num\">" + t("th_eprocess_peak") + "</th>";
+      }
+
+      setTxt("culprit-card-title-text", t("culprit_card_title"));
+      setTxt("culprit-card-sub-text", t("culprit_card_sub"));
+      setTxt("culprit-badge-text", t("culprit_badge"));
+      const thCulprits = document.getElementById("th-row-culprits");
+      if (thCulprits) {
+        thCulprits.innerHTML = "<th>" + t("th_bg_proc") + "</th><th class=\"num\">" + t("th_trim_hits") + "</th><th class=\"num\">" + t("th_peak_ws") + "</th><th class=\"num\">" + t("th_saved_tot") + "</th><th>" + t("th_strategy") + "</th>";
+      }
+    }
+
+    function toggleLanguage() {
+      currentLang = (currentLang === "zh-CN" ? "en-US" : "zh-CN");
+      localStorage.setItem("memora_lang", currentLang);
+      applyStaticI18N();
+      api("/api/toggle", "POST", { key: "language", value: currentLang }).catch(() => {});
+      if (latestState) {
+        renderState(latestState);
+      }
+      showToast(currentLang === "en-US" ? "Switched to English" : "已切换为简体中文", 2000);
+    }
 
     const SVG = {
       zap: '<svg class="ico ico-xs" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
@@ -2081,8 +2545,8 @@ const dashboardHTML = `<!doctype html>
       const tipSub = document.getElementById("tip-max-sub");
       if (frame) frame.classList.toggle("is-maximized", windowMaximized);
       if (ico) ico.innerHTML = windowMaximized ? SVG.winRestore : SVG.winMax;
-      if (tipTitle) tipTitle.textContent = windowMaximized ? "还原窗口尺寸" : "全屏展开视图";
-      if (tipSub) tipSub.textContent = windowMaximized ? "恢复默认悬浮桌面尺寸" : "最大化展开工作区，获得更充裕的进程与账本视野";
+      if (tipTitle) tipTitle.textContent = windowMaximized ? t("tip_max_restore") : t("tip_max_expand");
+      if (tipSub) tipSub.textContent = windowMaximized ? t("tip_max_restore_sub") : t("tip_max_expand_sub");
     }
 
     function winCtl(action) {
@@ -2468,6 +2932,7 @@ const dashboardHTML = `<!doctype html>
       const total = bd.total_bytes || a.total_phys_bytes || 1;
       const pct = v => (((v || 0) * 100) / total).toFixed(1) + "%";
       const isVidMode = bd.slot2_mode === "vid";
+      const isEn = currentLang === "en-US";
 
       if (segKey === "apps") {
         const valBytes = isVidMode ? bd.app_private_ws_bytes : (bd.active_app_ws_bytes || bd.app_private_ws_bytes);
@@ -2476,44 +2941,62 @@ const dashboardHTML = `<!doctype html>
           .join("、");
         return {
           color: "#3b82f6",
-          title: isVidMode ? "应用独占物理工作集" : "前台与活跃进程真实独占",
+          title: isEn
+            ? (isVidMode ? "App Private Physical Working Set" : "Foreground & Active Process Exclusive")
+            : (isVidMode ? "应用独占物理工作集" : "前台与活跃进程真实独占"),
           val: fmtBytes(valBytes) + " (" + pct(valBytes) + ")",
-          body: (isVidMode
-            ? "各进程无法共享的真实私有物理内存；含系统共享 DLL 后的总工作集为 <b>" + fmtBytes(a.ws_bytes) + "</b>。"
-            : "当前前台焦点链与系统活跃核心的真实私有物理占用（全体应用私有独占共 <b>" + fmtBytes(bd.app_private_ws_bytes) + "</b>）。") +
-            (topG ? ("<br/>占比较高应用：" + topG) : "")
+          body: isEn
+            ? ((isVidMode
+                ? "Actual non-shareable private physical RAM; total working set including shared DLLs is <b>" + fmtBytes(a.ws_bytes) + "</b>."
+                : "Current private physical RAM consumed by foreground focus and system core (all apps private total: <b>" + fmtBytes(bd.app_private_ws_bytes) + "</b>).") +
+              (topG ? ("<br/>Top applications: " + topG) : ""))
+            : ((isVidMode
+                ? "各进程无法共享的真实私有物理内存；含系统共享 DLL 后的总工作集为 <b>" + fmtBytes(a.ws_bytes) + "</b>。"
+                : "当前前台焦点链与系统活跃核心的真实私有物理占用（全体应用私有独占共 <b>" + fmtBytes(bd.app_private_ws_bytes) + "</b>）。") +
+              (topG ? ("<br/>占比较高应用：" + topG) : ""))
         };
       }
       if (segKey === "vid") {
         if (isVidMode) {
           return {
             color: "#8b5cf6",
-            title: "Hyper-V / WSL2 虚拟机锁页 (Vid)",
+            title: isEn ? "Hyper-V / WSL2 VM Locked Pages (Vid)" : "Hyper-V / WSL2 虚拟机锁页 (Vid)",
             val: fmtBytes(bd.vid_bytes) + " (" + pct(bd.vid_bytes) + ")",
-            body: "由 <b>vmmemWSL</b> 等虚拟机管理程序在物理内存中硬性锁定的页面；如未使用容器可在「真相归因」页一键执行 <code>wsl --shutdown</code> 归还。"
+            body: isEn
+              ? "Pages rigidly locked in physical RAM by virtualization hypervisors like <b>vmmemWSL</b>; if containers are idle, execute <code>wsl --shutdown</code> in the Root Attribution tab to reclaim."
+              : "由 <b>vmmemWSL</b> 等虚拟机管理程序在物理内存中硬性锁定的页面；如未使用容器可在「真相归因」页一键执行 <code>wsl --shutdown</code> 归还。"
           };
         }
         const idleBytes = (bd.idle_app_ws_bytes || 0) + (bd.vid_bytes || 0);
         const topIdle = (bd.top_idle_apps || []).map(x => esc(x)).join("、");
         return {
           color: "#8b5cf6",
-          title: "后台静默驻留工作集（非前沿进程）",
+          title: isEn ? "Idle Background Resident Working Set (Non-Foreground)" : "后台静默驻留工作集（非前沿进程）",
           val: fmtBytes(idleBytes) + " (" + pct(idleBytes) + ")",
-          body: "未检测到活跃的 WSL2 / 虚机大额锁页，第二槽已自适应切换为监控<b>非前台、非受保护后台应用</b>当前占用的真实物理工作集（MEMORA 将对其中久置目标温和降级或收敛）。" +
-            (topIdle ? ("<br/>主要后台驻留大户：" + topIdle) : "")
+          body: isEn
+            ? ("No active large WSL2 VM locks detected; slot 2 automatically monitors physical working sets held by <b>non-foreground, non-protected background apps</b> (MEMORA gently deprioritizes or converges long-idle targets)." +
+              (topIdle ? ("<br/>Top background consumers: " + topIdle) : ""))
+            : ("未检测到活跃的 WSL2 / 虚机大额锁页，第二槽已自适应切换为监控<b>非前台、非受保护后台应用</b>当前占用的真实物理工作集（MEMORA 将对其中久置目标温和降级或收敛）。" +
+              (topIdle ? ("<br/>主要后台驻留大户：" + topIdle) : ""))
         };
       }
       if (segKey === "zombie") {
         const lk = deep.kernel_leak || {};
         return {
           color: "#ef4444",
-          title: "内核僵尸 EPROCESS / 未归还页表",
+          title: isEn ? "Kernel Zombie EPROCESS / Lingering Page Tables" : "内核僵尸 EPROCESS / 未归还页表",
           val: fmtBytes(bd.zombie_leak_bytes) + " (" + pct(bd.zombie_leak_bytes) + ")",
-          body: "内核存活 Process 对象 <b>" + (lk.process_objects || 0) + "</b> 个 vs 真实活跃进程 <b>" + (lk.active_processes || a.process_count || 0) + "</b> 个" +
-            "，相关内核池 <b>" + fmtBytes(lk.related_pool_bytes) + "</b>。" +
-            (bd.zombie_leak_bytes > 64 * 1048576
-              ? "<br/>受驱动钩子引用计数残留锁定在内核态，可在「真相归因」页排查冲突驱动并阻断增长。"
-              : "<br/>当前内核对象数量与系统负载处于健康基线范围内。")
+          body: isEn
+            ? ("Kernel alive Process objects: <b>" + (lk.process_objects || 0) + "</b> vs real active processes: <b>" + (lk.active_processes || a.process_count || 0) + "</b>" +
+              ", related kernel pool: <b>" + fmtBytes(lk.related_pool_bytes) + "</b>." +
+              (bd.zombie_leak_bytes > 64 * 1048576
+                ? "<br/>Locked in kernel by lingering driver hook reference counts. Troubleshoot conflicting drivers in the Root Attribution tab to block further growth."
+                : "<br/>Kernel object counts and system load are within healthy baseline bounds."))
+            : ("内核存活 Process 对象 <b>" + (lk.process_objects || 0) + "</b> 个 vs 真实活跃进程 <b>" + (lk.active_processes || a.process_count || 0) + "</b> 个" +
+              "，相关内核池 <b>" + fmtBytes(lk.related_pool_bytes) + "</b>。" +
+              (bd.zombie_leak_bytes > 64 * 1048576
+                ? "<br/>受驱动钩子引用计数残留锁定在内核态，可在「真相归因」页排查冲突驱动并阻断增长。"
+                : "<br/>当前内核对象数量与系统负载处于健康基线范围内。"))
         };
       }
       if (segKey === "kernel") {
@@ -2523,17 +3006,22 @@ const dashboardHTML = `<!doctype html>
           .join("、");
         return {
           color: "#f59e0b",
-          title: "常规内核池 · 系统文件缓存 · 共享驻留页",
+          title: isEn ? "Kernel Pools · System Cache · Shared Resident Pages" : "常规内核池 · 系统文件缓存 · 共享驻留页",
           val: fmtBytes(bd.kernel_driver_bytes) + " (" + pct(bd.kernel_driver_bytes) + ")",
-          body: "包含内核 <b>NonPaged</b> (" + fmtBytes(a.kernel_nonpaged_bytes) + ") + <b>Paged</b> (" + fmtBytes(a.kernel_paged_bytes) + ") 池、系统文件缓存 (" + fmtBytes(a.system_cache_bytes || 0) + ") 与多进程共享工作集 (" + fmtBytes(sharedWS) + ")；共享页与系统缓存可通过上方释压按钮安全回收。" +
-            (topTags ? ("<br/>非分页内核池前二标签：" + topTags) : "")
+          body: isEn
+            ? ("Includes kernel <b>NonPaged</b> (" + fmtBytes(a.kernel_nonpaged_bytes) + ") + <b>Paged</b> (" + fmtBytes(a.kernel_paged_bytes) + ") pools, system file cache (" + fmtBytes(a.system_cache_bytes || 0) + "), and multi-process shared working sets (" + fmtBytes(sharedWS) + "); shared pages and cache can be safely recycled via the relief buttons above." +
+              (topTags ? ("<br/>Top nonpaged pool tags: " + topTags) : ""))
+            : ("包含内核 <b>NonPaged</b> (" + fmtBytes(a.kernel_nonpaged_bytes) + ") + <b>Paged</b> (" + fmtBytes(a.kernel_paged_bytes) + ") 池、系统文件缓存 (" + fmtBytes(a.system_cache_bytes || 0) + ") 与多进程共享工作集 (" + fmtBytes(sharedWS) + ")；共享页与系统缓存可通过上方释压按钮安全回收。" +
+              (topTags ? ("<br/>非分页内核池前二标签：" + topTags) : ""))
         };
       }
       return {
         color: "#10b981",
-        title: "立即可用物理内存（空闲 + 待机缓存）",
+        title: isEn ? "Available Physical RAM (Free + Standby Cache)" : "立即可用物理内存（空闲 + 待机缓存）",
         val: fmtBytes(bd.avail_bytes) + " (" + pct(bd.avail_bytes) + ")",
-        body: "空闲清零页 <b>" + fmtBytes(a.free_bytes) + "</b> + 待机缓存 <b>" + fmtBytes(a.standby_bytes) + "</b>（Windows 随时可秒级回收让给新开启软件）；待写回已修改页 <b>" + fmtBytes(a.modified_bytes) + "</b>。"
+        body: isEn
+          ? ("Free zeroed pages <b>" + fmtBytes(a.free_bytes) + "</b> + Standby cache <b>" + fmtBytes(a.standby_bytes) + "</b> (Windows can immediately repurpose these for new apps in milliseconds); Modified pages pending flush: <b>" + fmtBytes(a.modified_bytes) + "</b>.")
+          : ("空闲清零页 <b>" + fmtBytes(a.free_bytes) + "</b> + 待机缓存 <b>" + fmtBytes(a.standby_bytes) + "</b>（Windows 随时可秒级回收让给新开启软件）；待写回已修改页 <b>" + fmtBytes(a.modified_bytes) + "</b>。")
       };
     }
 
@@ -2611,13 +3099,13 @@ const dashboardHTML = `<!doctype html>
       document.getElementById("ver-pill").textContent = "v" + (s.version || "0.3.0");
       const adminPill = document.getElementById("admin-pill");
       if (s.is_admin) {
-        adminPill.textContent = "管理员权限就绪";
+        adminPill.textContent = t("admin_ok");
         adminPill.className = "topbar-badge admin-ok";
       } else {
-        adminPill.textContent = "标准权限 (提权将触发 UAC)";
+        adminPill.textContent = t("admin_std");
         adminPill.className = "topbar-badge admin-std";
       }
-      document.getElementById("mode-pill").textContent = isGuard ? "智能调度中" : "已关闭";
+      document.getElementById("mode-pill").textContent = isGuard ? t("mode_guard_on") : t("mode_guard_off");
 
       const usedPct = a.total_phys_bytes > 0 ? a.in_use_pct : 0;
       setTweenText("gauge-pct", usedPct.toFixed(1) + "%", "kpi-gauge");
@@ -2628,29 +3116,29 @@ const dashboardHTML = `<!doctype html>
       fg.style.stroke = a.smart_tier >= 3 ? "#ef4444" : (a.smart_tier === 2 ? "#f59e0b" : "#10b981");
 
       setTweenText("hero-used", fmtBytes(a.in_use_bytes), "kpi-used");
-      document.getElementById("hero-total").textContent = "总量 " + fmtBytes(a.total_phys_bytes);
+      document.getElementById("hero-total").textContent = t("hero_used_lbl", { tot: fmtBytes(a.total_phys_bytes) });
       setTweenText("hero-avail", fmtBytes(a.avail_phys_bytes), "kpi-avail");
 
       const tierPill = document.getElementById("tier-pill");
-      tierPill.textContent = a.smart_label || "一级 · 轻度巡航";
+      tierPill.textContent = translateSmartLabel(a.smart_label);
       tierPill.className = "pill " + (a.smart_tier >= 3 ? "pill-red" : (a.smart_tier === 2 ? "pill-amber" : "pill-green"));
 
       const gamePill = document.getElementById("game-pill");
       if (a.fullscreen_quiet) {
-        gamePill.textContent = (a.fullscreen_label || "全屏") + "静音护航中";
+        gamePill.textContent = t("game_quieting", { label: translateFullscreenLabel(a.fullscreen_label) });
         gamePill.className = "pill pill-amber";
       } else {
-        gamePill.textContent = "非全屏 · 调度就绪";
+        gamePill.textContent = t("game_ready");
         gamePill.className = "pill pill-slate";
       }
-      document.getElementById("family-pill").textContent = "前沿链受保护 " + (a.family_protected || 0) + " 个";
-      document.getElementById("self-pill").textContent = "自身 " + fmtBytes(s.self_ws_bytes) + " · " + (s.self_handles || 0) + " 句柄";
+      document.getElementById("family-pill").textContent = t("family_protected", { n: a.family_protected || 0 });
+      document.getElementById("self-pill").textContent = t("self_stats", { ws: fmtBytes(s.self_ws_bytes), hd: s.self_handles || 0 });
 
       syncModeSwitchUI(isGuard);
 
       const baseEl = document.getElementById("baseline-pill");
       if (bd.zombie_leak_bytes >= 4 * 1073741824 && deep.conflict_pending_reboot) {
-        baseEl.textContent = "待重启释放 " + fmtBytes(bd.zombie_leak_bytes) + " 历史内核残留";
+        baseEl.textContent = t("baseline_reboot", { size: fmtBytes(bd.zombie_leak_bytes) });
         baseEl.style.color = "#b45309";
         baseEl.style.borderColor = "#fde68a";
         baseEl.style.background = "#fffbeb";
@@ -2659,22 +3147,27 @@ const dashboardHTML = `<!doctype html>
         baseEl.style.borderColor = "";
         baseEl.style.background = "";
         if (isGuard) {
-          baseEl.textContent = "空载基线守护 · 托管 " + (a.soft_managed || 0) + " 个";
+          baseEl.textContent = t("baseline_managed", { n: a.soft_managed || 0 });
         } else {
-          baseEl.textContent = "调度已关闭 · 仅真实观测";
+          baseEl.textContent = t("baseline_closed");
         }
       }
 
       const upd = s.updated_at ? new Date(s.updated_at).toLocaleTimeString() : "--";
-      document.getElementById("sync-note").textContent = "最近采样 " + upd + " · 每 2.5 秒实时同步";
+      document.getElementById("sync-note").textContent = t("sync_note", { time: upd });
 
       // Commit + page list header
-      document.getElementById("proc-count-pill").textContent = "活跃进程 " + (a.process_count || 0) + " 个";
+      document.getElementById("proc-count-pill").textContent = t("active_procs", { n: a.process_count || 0 });
+      const isEn = currentLang === "en-US";
+      const lblCommit = isEn ? "Commit " : "提交 ";
+      const lblKern = isEn ? " · Kernel Pool " : " · 内核池 ";
+      const lblStandby = isEn ? " · Standby " : " · 待机缓存 ";
+      const lblMod = isEn ? " · Modified " : " · 已修改 ";
       setTweenHTML("commit-summary",
-        "提交 " + hlNum(fmtBytes(a.commit_bytes), "hl-blue", "sum-commit") + " / " + fmtBytes(a.total_commit_bytes) +
-        " · 内核池 " + hlNum(fmtBytes(a.kernel_total_bytes), "hl-amber", "sum-kern") +
-        " · 待机缓存 " + hlNum(fmtBytes(a.standby_bytes), "hl-emerald", "sum-standby") +
-        " · 已修改 " + fmtBytes(a.modified_bytes)
+        lblCommit + hlNum(fmtBytes(a.commit_bytes), "hl-blue", "sum-commit") + " / " + fmtBytes(a.total_commit_bytes) +
+        lblKern + hlNum(fmtBytes(a.kernel_total_bytes), "hl-amber", "sum-kern") +
+        lblStandby + hlNum(fmtBytes(a.standby_bytes), "hl-emerald", "sum-standby") +
+        lblMod + fmtBytes(a.modified_bytes)
       );
 
       // Adaptive 5-color Breakdown Bar & Legends (adapts Slot 2 between WSL2/Vid and Idle Background WS)
@@ -2693,25 +3186,26 @@ const dashboardHTML = `<!doctype html>
 
       const lblApps = document.getElementById("bd-apps-label");
       const lblVid = document.getElementById("bd-vid-label");
-      if (lblApps) lblApps.textContent = isVidMode ? "应用独占工作集" : "前台与活跃独占";
-      if (lblVid) lblVid.textContent = isVidMode ? "WSL2 / Vid 锁页" : "后台静默驻留";
+      if (lblApps) lblApps.textContent = isVidMode ? t("bd_apps_single") : t("bd_apps_active");
+      if (lblVid) lblVid.textContent = isVidMode ? t("bd_vid_label") : t("bd_idle_label");
 
       setTweenText("bd-apps-val", fmtBytes(slot1Bytes), "bd-apps");
-      document.getElementById("bd-apps-pct").textContent = pctOf(slot1Bytes).toFixed(1) + (isVidMode ? "% · 程序真实独占" : "% · 前沿/系统真实独占");
+      document.getElementById("bd-apps-pct").textContent = pctOf(slot1Bytes).toFixed(1) + (isVidMode ? t("bd_pct_app_single") : t("bd_pct_app_active"));
       setTweenText("bd-vid-val", fmtBytes(slot2Bytes), "bd-vid");
-      document.getElementById("bd-vid-pct").textContent = pctOf(slot2Bytes).toFixed(1) + (isVidMode ? "% · 虚机锁定" : "% · 非前沿后台驻留");
+      document.getElementById("bd-vid-pct").textContent = pctOf(slot2Bytes).toFixed(1) + (isVidMode ? t("bd_pct_vid") : t("bd_pct_idle"));
       setTweenText("bd-zombie-val", fmtBytes(bd.zombie_leak_bytes), "bd-zombie");
-      document.getElementById("bd-zombie-pct").textContent = pctOf(bd.zombie_leak_bytes).toFixed(1) + "% · 内核对象/PTE";
+      document.getElementById("bd-zombie-pct").textContent = pctOf(bd.zombie_leak_bytes).toFixed(1) + t("bd_pct_zombie");
       setTweenText("bd-kernel-val", fmtBytes(bd.kernel_driver_bytes), "bd-kernel");
-      document.getElementById("bd-kernel-pct").textContent = pctOf(bd.kernel_driver_bytes).toFixed(1) + "% · Pool+共享映射";
+      document.getElementById("bd-kernel-pct").textContent = pctOf(bd.kernel_driver_bytes).toFixed(1) + t("bd_pct_kernel");
       setTweenText("bd-avail-val", fmtBytes(bd.avail_bytes), "bd-avail");
-      document.getElementById("bd-avail-pct").textContent = pctOf(bd.avail_bytes).toFixed(1) + "% · 系统随时分配";
+      document.getElementById("bd-avail-pct").textContent = pctOf(bd.avail_bytes).toFixed(1) + t("bd_pct_avail");
 
       // Sparklines
       const hist = s.history || [];
+      const spawnUnit = isEn ? " /min" : " /分";
       setTweenText("sp-use-val", usedPct.toFixed(1) + "%", "sp-use");
       setTweenText("sp-apps-val", fmtBytes(bd.app_private_ws_bytes), "sp-apps");
-      setTweenText("sp-spawn-val", Math.round(a.spawn_rate_per_min || 0) + " /分", "sp-spawn");
+      setTweenText("sp-spawn-val", Math.round(a.spawn_rate_per_min || 0) + spawnUnit, "sp-spawn");
       setTweenText("sp-avail-val", fmtBytes(a.avail_phys_bytes), "sp-avail");
       renderSparkline("sp-use", hist.map(p => p.in_use_pct), "#2563eb", "rgba(37,99,235,0.12)");
       renderSparkline("sp-apps", hist.map(p => p.private_ws_gb), "#7c3aed", "rgba(124,58,237,0.12)");
@@ -2736,58 +3230,65 @@ const dashboardHTML = `<!doctype html>
       document.getElementById("dot-edge").classList.toggle("off", !edgeOn);
 
       const ew = cfg.edge_widget || {};
-      const sideLabel = ew.side === "right" ? "右侧贴边" : "左侧贴边";
+      const sideLabel = ew.side === "right" ? t("pill_edge_right") : t("pill_edge_left");
       const pillEdge = document.getElementById("pill-edge-side");
       if (pillEdge) {
-        pillEdge.textContent = edgeOn ? sideLabel : "已隐藏";
+        pillEdge.textContent = edgeOn ? sideLabel : t("pill_edge_hidden");
         pillEdge.className = "pill " + (edgeOn ? "pill-blue" : "pill-slate");
       }
 
       const autoLearn = !!act.auto_learn_storm_list;
       const pillAuto = document.getElementById("pill-autolearn");
-      pillAuto.textContent = autoLearn ? "自动名单学习中" : "手动名单模式";
+      pillAuto.textContent = autoLearn ? t("pill_autolearn_on") : t("pill_autolearn_off");
       pillAuto.className = "pill " + (autoLearn ? "pill-blue" : "pill-slate");
 
       const btnAuto = document.getElementById("btn-autolearn");
       const btnAutoTxt = document.getElementById("btn-autolearn-txt");
-      if (btnAutoTxt) btnAutoTxt.textContent = autoLearn ? "自动拉入压制名单：已开启" : "自动拉入压制名单：已关闭";
+      if (btnAutoTxt) btnAutoTxt.textContent = autoLearn ? t("btn_autolearn_on") : t("btn_autolearn_off");
       btnAuto.className = "btn-sm " + (autoLearn ? "btn-auto-on" : "");
 
       const adaptCnt = (a.adaptive_cooldown_procs || []).length;
-      const adaptNote = adaptCnt > 0 ? (" · 已防反扑自校准 " + hlNum(adaptCnt + " 项", "hl-violet", "adapt-cnt")) : "";
+      const adaptNote = adaptCnt > 0 ? (isEn ? (" · Anti-rebound active for " + hlNum(adaptCnt + " procs", "hl-violet", "adapt-cnt")) : (" · 已防反扑自校准 " + hlNum(adaptCnt + " 项", "hl-violet", "adapt-cnt"))) : "";
+      
       setTweenHTML("desc-smart", !isGuard
-        ? "智能调度已关闭（已恢复全部受管进程默认优先级，当前仅保持采样分析）"
+        ? (isEn ? "Smart dispatch disabled (all managed procs restored to default OS priority, passive observation only)" : "智能调度已关闭（已恢复全部受管进程默认优先级，当前仅保持采样分析）")
         : (act.smart_memory_schedule
-          ? ("智能调度运行中（当前 " + hlNum(a.smart_label || "一级 · 轻度巡航", "hl-emerald", "tier-lbl") + "），累计动态调节 " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote)
-          : "智能调度开关已关闭"));
+          ? (isEn ? ("Smart dispatch active (Current " + hlNum(translateSmartLabel(a.smart_label), "hl-emerald", "tier-lbl") + "), cumulative dynamic savings: " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote)
+                  : ("智能调度运行中（当前 " + hlNum(a.smart_label || "一级 · 轻度巡航", "hl-emerald", "tier-lbl") + "），累计动态调节 " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote))
+          : (isEn ? "Smart dispatch switch disabled" : "智能调度开关已关闭")));
 
       setTweenHTML("desc-eco", !isGuard
-        ? "当前已关闭调度，前台与后台进程均按 Windows 原生优先级调度"
+        ? (isEn ? "Dispatch disabled: foreground and background processes scheduled at native OS priority" : "当前已关闭调度，前台与后台进程均按 Windows 原生优先级调度")
         : (act.eco_qos_background
-          ? ("后台 CPU / EcoQoS 已启用，当前正在温和托管 " + hlNum((a.soft_managed || 0) + " 个", "hl-indigo", "soft-cnt") + " 非前沿闲置进程")
-          : "后台 EcoQoS 调度已关闭（已恢复全部受管进程默认优先级）"));
+          ? (isEn ? ("Background CPU / EcoQoS active: gently managing " + hlNum((a.soft_managed || 0) + " idle procs", "hl-indigo", "soft-cnt") + " off-foreground")
+                  : ("后台 CPU / EcoQoS 已启用，当前正在温和托管 " + hlNum((a.soft_managed || 0) + " 个", "hl-indigo", "soft-cnt") + " 非前沿闲置进程"))
+          : (isEn ? "Background EcoQoS scheduling disabled (default OS priority restored)" : "后台 EcoQoS 调度已关闭（已恢复全部受管进程默认优先级）")));
 
       setTweenHTML("desc-storm", !isGuard
-        ? "当前已关闭调度（停止自动对后台派生宿主降级）"
+        ? (isEn ? "Dispatch disabled (auto-throttling on spawn storm hosts stopped)" : "当前已关闭调度（停止自动对后台派生宿主降级）")
         : (act.suppress_spawn_storm
-          ? ("派生风暴压制已启用（当前派生速率 " + hlNum(Math.round(a.spawn_rate_per_min || 0) + " 个/分", "hl-amber", "spawn-rt") + "），已压制 " + hlNum((lg.storm_suppressions || 0) + " 次", "hl-red", "storm-cnt") + "，长期名单 " + hlNum((cfg.suppressed_spawners || []).length + " 项", "hl-blue", "list-cnt"))
-          : "派生风暴压制已关闭（高频拉起短命子进程的后台宿主将不被自动降级）"));
+          ? (isEn ? ("Spawn storm suppression active (Current rate " + hlNum(Math.round(a.spawn_rate_per_min || 0) + " /min", "hl-amber", "spawn-rt") + "), suppressed " + hlNum((lg.storm_suppressions || 0) + " times", "hl-red", "storm-cnt") + ", persistent list " + hlNum((cfg.suppressed_spawners || []).length + " items", "hl-blue", "list-cnt"))
+                  : ("派生风暴压制已启用（当前派生速率 " + hlNum(Math.round(a.spawn_rate_per_min || 0) + " 个/分", "hl-amber", "spawn-rt") + "），已压制 " + hlNum((lg.storm_suppressions || 0) + " 次", "hl-red", "storm-cnt") + "，长期名单 " + hlNum((cfg.suppressed_spawners || []).length + " 项", "hl-blue", "list-cnt")) )
+          : (isEn ? "Spawn storm suppression disabled (rapid child spawner hosts will not be throttled)" : "派生风暴压制已关闭（高频拉起短命子进程的后台宿主将不被自动降级）")));
 
       setTweenHTML("desc-standby", !isGuard
-        ? "待机缓存交由 Windows 原生淘汰"
+        ? (isEn ? "Standby cache left entirely to Windows native eviction" : "待机缓存交由 Windows 原生淘汰")
         : (act.purge_standby
-          ? ("待机页与修改页清洗已启用（高压档自动清理低优先级待机缓存，当前待机 " + hlNum(fmtBytes(a.standby_bytes), "hl-blue", "standby-sz") + "）")
-          : "待机缓存清洗已关闭（全权交由 Windows 内存管理器自行淘汰）"));
+          ? (isEn ? ("Standby and modified page flush active (flushes cold standby pages under high memory pressure, current standby: " + hlNum(fmtBytes(a.standby_bytes), "hl-blue", "standby-sz") + ")")
+                  : ("待机页与修改页清洗已启用（高压档自动清理低优先级待机缓存，当前待机 " + hlNum(fmtBytes(a.standby_bytes), "hl-blue", "standby-sz") + "）"))
+          : (isEn ? "Standby cache flush disabled (delegated entirely to Windows memory manager)" : "待机缓存清洗已关闭（全权交由 Windows 内存管理器自行淘汰）")));
 
       setTweenHTML("desc-full", thr.quiet_on_fullscreen
-        ? ("全屏免打扰已启用，已累计避让真全屏独占场景 " + hlNum((lg.fullscreen_skips || 0) + " 次", "hl-violet", "full-skips"))
-        : "全屏免打扰已关闭（即使全屏游戏也会继续常规轻度调度）");
+        ? (isEn ? ("Fullscreen quiet escort active, bypassed true fullscreen scenarios " + hlNum((lg.fullscreen_skips || 0) + " times", "hl-violet", "full-skips"))
+                : ("全屏免打扰已启用，已累计避让真全屏独占场景 " + hlNum((lg.fullscreen_skips || 0) + " 次", "hl-violet", "full-skips")))
+        : (isEn ? "Fullscreen quiet escort disabled (continues light scheduling even during games)" : "全屏免打扰已关闭（即使全屏游戏也会继续常规轻度调度）"));
 
       setTweenHTML("desc-edge", !edgeOn
-        ? "贴边真相光尺已关闭（可随时在此开启或右键系统托盘切换）"
+        ? (isEn ? "Edge Horizon disabled (toggle here or right-click tray icon)" : "贴边真相光尺已关闭（可随时在此开启或右键系统托盘切换）")
         : (a.fullscreen_quiet && thr.quiet_on_fullscreen
-          ? "贴边真相光尺已开启（检测到全屏独占前景，当前自动静音隐身）"
-          : ("贴边真相光尺运行中（" + sideLabel + " · 高度 " + hlNum(Math.round((ew.y_percent || 0.22) * 100) + "%", "hl-blue", "edge-y") + "）；悬停展开 CPU/GPU 温度与深释圆环，支持全屏自由拖拽与松手自动贴边")));
+          ? (isEn ? "Edge Horizon enabled (detected fullscreen foreground, automatically hidden)" : "贴边真相光尺已开启（检测到全屏独占前景，当前自动静音隐身）")
+          : (isEn ? ("Edge Horizon active (" + sideLabel + " · height " + hlNum(Math.round((ew.y_percent || 0.22) * 100) + "%", "hl-blue", "edge-y") + "); hover to expand CPU/GPU temp & deep relief circle; drag freely to dock")
+                  : ("贴边真相光尺运行中（" + sideLabel + " · 高度 " + hlNum(Math.round((ew.y_percent || 0.22) * 100) + "%", "hl-blue", "edge-y") + "）；悬停展开 CPU/GPU 温度与深释圆环，支持全屏自由拖拽与松手自动贴边"))));
 
       // Tab 2: Truth cards, storm chips, spawner table
       const alertCount = renderDiagCards(deep, bd, a, s.is_admin);
@@ -2809,16 +3310,19 @@ const dashboardHTML = `<!doctype html>
       renderJournal(s.recent_journal || []);
 
       // Tab 4: Ledger
-      setTweenHTML("lg-hours", hlNum(((lg.total_guard_seconds || 0) / 3600).toFixed(1) + " 小时", "hl-blue", "lg-h"));
+      const unitHours = isEn ? " hrs" : " 小时";
+      const unitTimes = isEn ? " times" : " 次";
+      const unitProcs = isEn ? " procs" : " 个";
+      setTweenHTML("lg-hours", hlNum(((lg.total_guard_seconds || 0) / 3600).toFixed(1) + unitHours, "hl-blue", "lg-h"));
       setTweenHTML("lg-restraint", hlNum((lgWrap.restraint_rate != null ? lgWrap.restraint_rate : 100).toFixed(1) + "%", "hl-emerald", "lg-r"));
       setTweenHTML("lg-dyn", hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "lg-d"));
-      setTweenHTML("lg-peaks", hlNum((lg.peak_saves || 0) + " / " + (lg.trim_actions || 0) + " 次", "hl-amber", "lg-p"));
-      setTweenHTML("lg-full", hlNum((lg.fullscreen_skips || 0) + " 次", "hl-violet", "lg-f"));
-      setTweenHTML("lg-orphan", hlNum((lg.orphans_detected || 0) + " 个", "hl-indigo", "lg-o"));
-      setTweenHTML("lg-storm", hlNum((lg.storm_suppressions || 0) + " 次", "hl-red", "lg-s"));
-      setTweenHTML("lg-leak", hlNum((lg.kernel_leak_observations || 0) + " 次", "hl-red", "lg-l"));
+      setTweenHTML("lg-peaks", hlNum((lg.peak_saves || 0) + " / " + (lg.trim_actions || 0) + unitTimes, "hl-amber", "lg-p"));
+      setTweenHTML("lg-full", hlNum((lg.fullscreen_skips || 0) + unitTimes, "hl-violet", "lg-f"));
+      setTweenHTML("lg-orphan", hlNum((lg.orphans_detected || 0) + unitProcs, "hl-indigo", "lg-o"));
+      setTweenHTML("lg-storm", hlNum((lg.storm_suppressions || 0) + unitTimes, "hl-red", "lg-s"));
+      setTweenHTML("lg-leak", hlNum((lg.kernel_leak_observations || 0) + unitTimes, "hl-red", "lg-l"));
       if (lg.last_kernel_leak_desc) {
-        document.getElementById("lg-leak-desc").textContent = "最近内核目击: " + lg.last_kernel_leak_desc;
+        document.getElementById("lg-leak-desc").textContent = t("lg_leak_recent", { desc: lg.last_kernel_leak_desc });
       }
       renderBaselines(lg.daily_baselines || [], s.baseline_comparison || {});
       renderBloatCulprits(s.bloat_culprits || []);
@@ -3166,27 +3670,29 @@ const dashboardHTML = `<!doctype html>
     function renderBaselines(list, cmp) {
       const tb = document.getElementById("tbl-baselines");
       const badge = document.getElementById("baseline-drift-badge");
+      const isEn = currentLang === "en-US";
       if (badge) {
         if (!cmp || !cmp.days_tracked) {
-          badge.textContent = "待累积跨天基线";
+          badge.textContent = isEn ? "Awaiting multi-day baseline" : "待累积跨天基线";
           badge.className = "pill pill-slate";
         } else if (cmp.days_tracked === 1) {
-          badge.textContent = "首日基准 " + fmtMB(cmp.first_min_in_use_mb || 0);
+          badge.textContent = (isEn ? "Day 1 Baseline " : "首日基准 ") + fmtMB(cmp.first_min_in_use_mb || 0);
           badge.className = "pill pill-blue";
         } else {
           const sign = cmp.drift_mb >= 0 ? "+" : "-";
           const absTxt = fmtMB(Math.abs(cmp.drift_mb || 0));
+          const daysLbl = isEn ? (cmp.days_tracked + "d ") : (cmp.days_tracked + "天");
           if (cmp.stable) {
-            badge.textContent = cmp.days_tracked + "天稳态: " + fmtMB(cmp.first_min_in_use_mb) + " → " + fmtMB(cmp.latest_min_in_use_mb) + " (" + sign + absTxt + ")";
+            badge.textContent = daysLbl + (isEn ? "Stable: " : "稳态: ") + fmtMB(cmp.first_min_in_use_mb) + " → " + fmtMB(cmp.latest_min_in_use_mb) + " (" + sign + absTxt + ")";
             badge.className = "pill pill-green";
           } else {
-            badge.textContent = cmp.days_tracked + "天偏移: " + fmtMB(cmp.first_min_in_use_mb) + " → " + fmtMB(cmp.latest_min_in_use_mb) + " (" + sign + absTxt + ")";
+            badge.textContent = daysLbl + (isEn ? "Drift: " : "偏移: ") + fmtMB(cmp.first_min_in_use_mb) + " → " + fmtMB(cmp.latest_min_in_use_mb) + " (" + sign + absTxt + ")";
             badge.className = "pill pill-amber";
           }
         }
       }
       if (!list || list.length === 0) {
-        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">暂无跨天记录</td></tr>';
+        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">' + (isEn ? "No multi-day records available yet" : "暂无跨天记录") + '</td></tr>';
         return;
       }
       const recent7 = list.slice(-7);
@@ -3198,15 +3704,17 @@ const dashboardHTML = `<!doctype html>
     function renderBloatCulprits(list) {
       const tb = document.getElementById("tbl-culprits");
       if (!tb) return;
+      const isEn = currentLang === "en-US";
       if (!list || list.length === 0) {
-        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">暂未记录后台膨胀与虚高收敛目标（系统表现克制平稳）</td></tr>';
+        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">' + (isEn ? "No bloat attribution records yet (restrained and stable)" : "暂未记录后台膨胀与虚高收敛目标（系统表现克制平稳）") + '</td></tr>';
         return;
       }
       tb.innerHTML = list.map(c => {
         const strat = c.adaptive_cooldown
-          ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">防反扑软抑</span>'
-          : '<span class="pill pill-blue" style="padding:1px 6px;font-size:11px">分级收紧</span>';
-        return '<tr class="hover-row"><td><span class="mini-proc-cell">' + miniProcIconHTML(0, c.name) + '<b>' + esc(c.name) + '</b></span></td><td class="num">' + (c.hits || 0) + ' 次</td><td class="num">' + fmtMB(c.max_ws_mb || 0) + '</td><td class="num">' + fmtMB(c.reclaimed_mb || 0) + '</td><td>' + strat + '</td></tr>';
+          ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">' + t("strat_rebound") + '</span>'
+          : '<span class="pill pill-blue" style="padding:1px 6px;font-size:11px">' + t("strat_trim") + '</span>';
+        const hitsUnit = isEn ? " hits" : " 次";
+        return '<tr class="hover-row"><td><span class="mini-proc-cell">' + miniProcIconHTML(0, c.name) + '<b>' + esc(c.name) + '</b></span></td><td class="num">' + (c.hits || 0) + hitsUnit + '</td><td class="num">' + fmtMB(c.max_ws_mb || 0) + '</td><td class="num">' + fmtMB(c.reclaimed_mb || 0) + '</td><td>' + strat + '</td></tr>';
       }).join("");
     }
 
@@ -3528,6 +4036,7 @@ const dashboardHTML = `<!doctype html>
       }
     }
 
+    applyStaticI18N();
     refreshState();
     setInterval(() => {
       if (!document.hidden) {

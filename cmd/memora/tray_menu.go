@@ -146,6 +146,7 @@ type trayMenuState struct {
 	OptBusy     bool
 	OptNote     string
 	OptNoteAt   time.Time
+	Language    string
 	ModeLabel   string
 	ModeColor   uint32
 	MemBadge    string
@@ -245,62 +246,127 @@ func (st *trayMenuState) rebuildItems() {
 		}
 	}
 
+	isEn := strings.HasPrefix(strings.ToLower(st.Language), "en")
+
 	modeItemLabel := "智能调度模式：已开启"
 	modeItemBadge := "切换关闭"
 	modeBadgeCol := uint32(0x00699605) // #059669 emerald
 	headerStatus := "智能调度中"
+	if isEn {
+		modeItemLabel = "Smart Dispatch: Enabled"
+		modeItemBadge = "Turn Off"
+		headerStatus = "Smart Dispatching"
+	}
 	if st.Mode != "guard" {
 		modeItemLabel = "智能调度模式：已关闭"
 		modeItemBadge = "点击开启"
 		modeBadgeCol = uint32(0x008B7464) // #64748B slate
 		headerStatus = "已关闭"
+		if isEn {
+			modeItemLabel = "Smart Dispatch: Disabled"
+			modeItemBadge = "Turn On"
+			headerStatus = "Disabled"
+		}
 	}
 
 	edgeItemLabel := "贴边真相光尺：已开启"
 	edgeItemBadge := "点击关闭"
 	edgeBadgeCol := uint32(0x00EB6325) // #2563EB MEMORA blue
+	if isEn {
+		edgeItemLabel = "Edge Horizon: Enabled"
+		edgeItemBadge = "Turn Off"
+	}
 	if !st.EdgeEnabled {
 		edgeItemLabel = "贴边真相光尺：已关闭"
 		edgeItemBadge = "点击开启"
 		edgeBadgeCol = uint32(0x008B7464)
+		if isEn {
+			edgeItemLabel = "Edge Horizon: Disabled"
+			edgeItemBadge = "Turn On"
+		}
 	}
 
 	optLabel := "立即深度释压"
 	optBadge := "单次"
+	if isEn {
+		optLabel = "Deep Pressure Relief Now"
+		optBadge = "Action"
+	}
 	optDotCol := uint32(0x00EB6325)
 	if st.OptBusy {
 		optLabel = "正在深度释压..."
 		optBadge = "执行中"
+		if isEn {
+			optLabel = "Relieving Pressure..."
+			optBadge = "Running"
+		}
 	} else if st.OptNote != "" && time.Since(st.OptNoteAt) <= 8*time.Second {
 		optLabel = "深度释压 (" + strings.TrimSpace(st.OptNote) + ")"
 		optBadge = "已完成"
+		if isEn {
+			optLabel = "Pressure Relief (" + strings.TrimSpace(st.OptNote) + ")"
+			optBadge = "Done"
+		}
 		optDotCol = uint32(0x00699605)
 	}
 
 	memBadge := "采样中"
+	if isEn {
+		memBadge = "Sampling..."
+	}
 	if st.HasSample {
 		if st.SelfMB > 0 {
-			memBadge = fmt.Sprintf("已用 %.0f%% · 可用 %.0f%% · 自身占用 %dMB", inUsePct, st.AvailPct, st.SelfMB)
+			if isEn {
+				memBadge = fmt.Sprintf("Used %.0f%% · Avail %.0f%% · Self %dMB", inUsePct, st.AvailPct, st.SelfMB)
+			} else {
+				memBadge = fmt.Sprintf("已用 %.0f%% · 可用 %.0f%% · 自身占用 %dMB", inUsePct, st.AvailPct, st.SelfMB)
+			}
 		} else {
-			memBadge = fmt.Sprintf("已用 %.0f%% · 可用 %.0f%%", inUsePct, st.AvailPct)
+			if isEn {
+				memBadge = fmt.Sprintf("Used %.0f%% · Avail %.0f%%", inUsePct, st.AvailPct)
+			} else {
+				memBadge = fmt.Sprintf("已用 %.0f%% · 可用 %.0f%%", inUsePct, st.AvailPct)
+			}
 		}
 	} else if st.SelfMB > 0 {
-		memBadge = fmt.Sprintf("采样中 · 自身占用 %dMB", st.SelfMB)
+		if isEn {
+			memBadge = fmt.Sprintf("Sampling... · Self %dMB", st.SelfMB)
+		} else {
+			memBadge = fmt.Sprintf("采样中 · 自身占用 %dMB", st.SelfMB)
+		}
 	}
 
-	items := []trayMenuItem{
-		{ID: idTrayOpenUI, Label: "打开 MEMORA 性能调度中心", Badge: "主页", Bold: true, DotCol: 0x00EB6325},
-		{ID: idTrayOptimize, Label: optLabel, Badge: optBadge, DotCol: optDotCol, KeepOpen: true},
-		{Sep: true},
-		{ID: idTrayToggleMode, Label: modeItemLabel, Badge: modeItemBadge, DotCol: modeBadgeCol, KeepOpen: true},
-		{ID: idTrayToggleEdge, Label: edgeItemLabel, Badge: edgeItemBadge, DotCol: edgeBadgeCol, KeepOpen: true},
-		{Sep: true},
-		{ID: idTrayStatus, Label: "快速状态弹窗摘要...", DotCol: 0x009B7464},
-		{ID: idTrayDeepStatus, Label: "终端深度扫描 (status --deep)", DotCol: 0x009B7464},
-		{ID: idTrayLedger, Label: "查看长期静默账本...", DotCol: 0x009B7464},
-		{ID: idTrayOpenDir, Label: "打开日志与配置目录", DotCol: 0x009B7464},
-		{Sep: true},
-		{ID: idTrayExit, Label: "退出 MEMORA", Danger: true, DotCol: 0x002626DC},
+	var items []trayMenuItem
+	if isEn {
+		items = []trayMenuItem{
+			{ID: idTrayOpenUI, Label: "Open MEMORA Dispatch Center", Badge: "Home", Bold: true, DotCol: 0x00EB6325},
+			{ID: idTrayOptimize, Label: optLabel, Badge: optBadge, DotCol: optDotCol, KeepOpen: true},
+			{Sep: true},
+			{ID: idTrayToggleMode, Label: modeItemLabel, Badge: modeItemBadge, DotCol: modeBadgeCol, KeepOpen: true},
+			{ID: idTrayToggleEdge, Label: edgeItemLabel, Badge: edgeItemBadge, DotCol: edgeBadgeCol, KeepOpen: true},
+			{Sep: true},
+			{ID: idTrayStatus, Label: "Quick Status Summary...", DotCol: 0x009B7464},
+			{ID: idTrayDeepStatus, Label: "Terminal Deep Scan (status --deep)", DotCol: 0x009B7464},
+			{ID: idTrayLedger, Label: "View Quiet Ledger...", DotCol: 0x009B7464},
+			{ID: idTrayOpenDir, Label: "Open Logs & Config Folder", DotCol: 0x009B7464},
+			{Sep: true},
+			{ID: idTrayExit, Label: "Exit MEMORA", Danger: true, DotCol: 0x002626DC},
+		}
+	} else {
+		items = []trayMenuItem{
+			{ID: idTrayOpenUI, Label: "打开 MEMORA 性能调度中心", Badge: "主页", Bold: true, DotCol: 0x00EB6325},
+			{ID: idTrayOptimize, Label: optLabel, Badge: optBadge, DotCol: optDotCol, KeepOpen: true},
+			{Sep: true},
+			{ID: idTrayToggleMode, Label: modeItemLabel, Badge: modeItemBadge, DotCol: modeBadgeCol, KeepOpen: true},
+			{ID: idTrayToggleEdge, Label: edgeItemLabel, Badge: edgeItemBadge, DotCol: edgeBadgeCol, KeepOpen: true},
+			{Sep: true},
+			{ID: idTrayStatus, Label: "快速状态弹窗摘要...", DotCol: 0x009B7464},
+			{ID: idTrayDeepStatus, Label: "终端深度扫描 (status --deep)", DotCol: 0x009B7464},
+			{ID: idTrayLedger, Label: "查看长期静默账本...", DotCol: 0x009B7464},
+			{ID: idTrayOpenDir, Label: "打开日志与配置目录", DotCol: 0x009B7464},
+			{Sep: true},
+			{ID: idTrayExit, Label: "退出 MEMORA", Danger: true, DotCol: 0x002626DC},
+		}
 	}
 
 	padX := scalePx(8, st.DPI)
@@ -326,7 +392,7 @@ func isModernTrayPopupOpen() bool {
 	return trayPopupOpen.Load()
 }
 
-func updateModernTrayPopupState(mode string, availPct float64, selfMB uint64, hasSample bool, edgeEnabled bool, clearOptBusy bool, optNote string) {
+func updateModernTrayPopupState(mode string, availPct float64, selfMB uint64, hasSample bool, edgeEnabled bool, clearOptBusy bool, optNote string, lang string) {
 	if activeTrayMenu == nil || activeTrayMenu.MenuHwnd == 0 {
 		return
 	}
@@ -342,6 +408,9 @@ func updateModernTrayPopupState(mode string, availPct float64, selfMB uint64, ha
 		st.SelfMB = selfMB
 	}
 	st.EdgeEnabled = edgeEnabled
+	if lang != "" {
+		st.Language = lang
+	}
 	if clearOptBusy {
 		st.OptBusy = false
 	}
@@ -353,7 +422,7 @@ func updateModernTrayPopupState(mode string, availPct float64, selfMB uint64, ha
 	_, _, _ = procInvalidateRect.Call(st.MenuHwnd, 0, 0)
 }
 
-func showModernTrayPopup(parentHwnd, icon uintptr, mode string, availPct float64, selfMB uint64, hasSample bool, edgeEnabled bool) {
+func showModernTrayPopup(parentHwnd, icon uintptr, mode string, availPct float64, selfMB uint64, hasSample bool, edgeEnabled bool, lang string) {
 	if activeTrayMenu != nil && activeTrayMenu.MenuHwnd != 0 {
 		old := activeTrayMenu.MenuHwnd
 		activeTrayMenu.MenuHwnd = 0
@@ -367,7 +436,7 @@ func showModernTrayPopup(parentHwnd, icon uintptr, mode string, availPct float64
 		}
 	}
 
-	w := scalePx(344, dpi)
+	w := scalePx(352, dpi)
 	hdrH := scalePx(56, dpi)
 	padBottom := scalePx(8, dpi)
 
@@ -382,6 +451,7 @@ func showModernTrayPopup(parentHwnd, icon uintptr, mode string, availPct float64
 		SelfMB:      selfMB,
 		HasSample:   hasSample,
 		EdgeEnabled: edgeEnabled,
+		Language:    lang,
 		HoverIdx:    -1,
 	}
 	st.rebuildItems()

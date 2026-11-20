@@ -48,6 +48,7 @@ type Thresholds struct {
 // Config is the whole settings file.
 type Config struct {
 	Mode               string           `json:"mode"` // observe | guard
+	Language           string           `json:"language,omitempty"` // "zh-CN" | "en-US"
 	IntervalSeconds    int              `json:"interval_seconds"`
 	Actions            Actions          `json:"actions"`
 	Thresholds         Thresholds       `json:"thresholds"`
@@ -68,6 +69,7 @@ func DefaultSuppressedSpawners() []string {
 func Default() Config {
 	return Config{
 		Mode:            "guard",
+		Language:        "zh-CN",
 		IntervalSeconds: 10,
 		Actions: Actions{
 			SmartMemorySchedule:     true,
@@ -160,6 +162,18 @@ func sanitize(cfg *Config) bool {
 	if cfg.Mode != "observe" && cfg.Mode != "guard" {
 		cfg.Mode = "observe"
 		changed = true
+	}
+	switch strings.ToLower(cfg.Language) {
+	case "en", "en-us", "english":
+		if cfg.Language != "en-US" {
+			cfg.Language = "en-US"
+			changed = true
+		}
+	default:
+		if cfg.Language != "zh-CN" {
+			cfg.Language = "zh-CN"
+			changed = true
+		}
 	}
 	if cfg.EdgeWidget.Side != "left" && cfg.EdgeWidget.Side != "right" {
 		cfg.EdgeWidget.Side = "left"

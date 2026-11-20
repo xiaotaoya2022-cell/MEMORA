@@ -245,6 +245,7 @@ func cmdTray(args []string) {
 	var stateMu sync.Mutex
 	currentMode := cfg.Mode
 	currentEdgeOn := cfg.Actions.EdgeHorizon
+	currentLang := cfg.Language
 	var latest engine.Assessment
 	var latestSelfWS uint64
 	var lastOptNote string
@@ -291,6 +292,7 @@ func cmdTray(args []string) {
 			stateMu.Lock()
 			currentMode = c.Mode
 			currentEdgeOn = c.Actions.EdgeHorizon
+			currentLang = c.Language
 			stateMu.Unlock()
 			postMsg(wmUpdateTooltip)
 		})
@@ -447,18 +449,35 @@ func cmdTray(args []string) {
 		okSample := hasLatest
 		edgeOn := currentEdgeOn
 		sws := latestSelfWS
+		lang := currentLang
 		stateMu.Unlock()
+		isEn := strings.HasPrefix(strings.ToLower(lang), "en")
 		tip := fmt.Sprintf("MEMORA %s · %s", version, m)
 		if okSample {
 			statusTag := "智能调度"
+			if isEn {
+				statusTag = "Smart Dispatch"
+			}
 			if a.FullscreenQuiet {
-				statusTag = a.FullscreenLabel + "免打扰"
+				if isEn {
+					statusTag = a.FullscreenLabel + " Quiet"
+				} else {
+					statusTag = a.FullscreenLabel + "免打扰"
+				}
 			} else if m != "guard" {
-				statusTag = "已关闭"
+				if isEn {
+					statusTag = "Disabled"
+				} else {
+					statusTag = "已关闭"
+				}
 			} else if a.SmartLabel != "" {
 				statusTag = a.SmartLabel
 			}
-			tip = fmt.Sprintf("MEMORA %s · %s · 可用 %.0f%%", version, statusTag, a.AvailPct)
+			if isEn {
+				tip = fmt.Sprintf("MEMORA %s · %s · Avail %.0f%%", version, statusTag, a.AvailPct)
+			} else {
+				tip = fmt.Sprintf("MEMORA %s · %s · 可用 %.0f%%", version, statusTag, a.AvailPct)
+			}
 		}
 		var nid notifyIconData
 		nid.CbSize = uint32(unsafe.Sizeof(nid))
@@ -468,7 +487,7 @@ func cmdTray(args []string) {
 		copyUTF16(nid.SzTip[:], tip)
 		_, _, _ = procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 		if isModernTrayPopupOpen() {
-			updateModernTrayPopupState(m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn, false, "")
+			updateModernTrayPopupState(m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn, false, "", lang)
 		}
 	}
 
@@ -517,8 +536,9 @@ func cmdTray(args []string) {
 		okSample := hasLatest
 		edgeOn := currentEdgeOn
 		sws := latestSelfWS
+		lang := currentLang
 		stateMu.Unlock()
-		showModernTrayPopup(h, popupIcon, m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn)
+		showModernTrayPopup(h, popupIcon, m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn, lang)
 	}
 
 	var lastLeftClickAt time.Time
@@ -539,8 +559,9 @@ func cmdTray(args []string) {
 			edgeOn := currentEdgeOn
 			sws := latestSelfWS
 			note := lastOptNote
+			lang := currentLang
 			stateMu.Unlock()
-			updateModernTrayPopupState(m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn, true, note)
+			updateModernTrayPopupState(m, a.AvailPct, popupSelfMB(sws), okSample, edgeOn, true, note, lang)
 			return 0
 		case wmOpenDashboard:
 			if dash != nil {
