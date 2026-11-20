@@ -792,9 +792,10 @@ const dashboardHTML = `<!doctype html>
     }
     .spark-hdr {
       display: flex; justify-content: space-between; align-items: baseline;
-      font-size: 11px; color: var(--muted); margin-bottom: 2px; gap: 4px;
+      font-size: 11px; color: var(--muted); margin-bottom: 2px; gap: 6px; min-width: 0;
     }
-    .spark-hdr strong { font-family: var(--font-num); font-size: 14px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+    .spark-hdr > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .spark-hdr strong { font-family: var(--font-num); font-size: 14px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; flex-shrink: 0; white-space: nowrap; }
     .spark-svg { width: 100%; height: 30px; display: block; }
 
     /* Highlighted & Synchronized Scale-Up + Count-Up/Down Tween Numbers */
@@ -881,6 +882,8 @@ const dashboardHTML = `<!doctype html>
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
       transition: color 0.2s ease;
     }
     .tab-btn:hover { color: var(--text); }
@@ -1473,6 +1476,14 @@ const dashboardHTML = `<!doctype html>
     .export-toast-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
 
     /* Multi-Stage Responsive Adaptation Down to Minimum Window 980x640 */
+    .ledger-bottom-split th { white-space: nowrap; }
+    .ledger-stat { min-width: 0; }
+    .ledger-stat .k, .ledger-stat .s { line-height: 1.3; word-break: break-word; }
+
+    @media (max-width: 1260px) {
+      .tab-btn { padding: 5px 10px; font-size: 12.5px; gap: 5px; }
+      .ledger-bottom-split th { font-size: 11px; }
+    }
     @media (max-width: 1180px) {
       .shell { grid-template-columns: 256px 1fr; gap: 11px; padding: 10px 12px; }
       .hero-card { padding: 12px; }
@@ -1482,6 +1493,8 @@ const dashboardHTML = `<!doctype html>
       .proc-metrics { width: 112px; }
       .proc-name { max-width: 155px; }
       .topbar-title { font-size: 13px; }
+      .tab-btn { padding: 5px 8px; font-size: 12px; gap: 4px; }
+      .btn-ghost { font-size: 11.5px; padding: 7px 8px; white-space: normal; text-align: center; line-height: 1.25; }
     }
     @media (max-width: 1040px) {
       .shell { grid-template-columns: 238px 1fr; gap: 10px; padding: 9px 10px; }
@@ -1490,7 +1503,12 @@ const dashboardHTML = `<!doctype html>
       .legend-val { font-size: 13px; }
       .spark-grid, .ledger-grid { gap: 6px; }
       .topbar-badge#baseline-pill { display: none; }
-      .tab-btn { padding: 5px 9px; font-size: 12px; }
+      .tab-btn { padding: 4px 7px; font-size: 11.5px; gap: 4px; }
+      .metric-pair .val { font-size: 13.5px; }
+      .metric-pair .lbl { font-size: 10.5px; }
+      .mode-btn { font-size: 11.5px; padding: 6px 4px; }
+      .ledger-stat { padding: 8px 9px; }
+      .ledger-stat .v { font-size: 15px; }
     }
     @media (max-height: 730px) {
       .overview-card { padding: 10px 13px; }
@@ -1747,15 +1765,10 @@ const dashboardHTML = `<!doctype html>
           <!-- Tab 1: Smart Switches -->
           <div class="tab-pane active" id="tab-smart">
             <div class="card-hdr" style="margin-bottom:2px">
-              <div class="card-sub" id="smart-hdr-sub">开关改动立即落盘生效；关闭「智能调度」或任意子开关时自动归还被约束进程的 OS 默认优先级</div>
-              <label style="font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <div class="card-sub" id="smart-hdr-sub" style="flex:1;min-width:200px">开关改动立即落盘生效；关闭「智能调度」或任意子开关时自动归还被约束进程的 OS 默认优先级</div>
+              <label style="font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0;white-space:nowrap;">
                 <input type="checkbox" id="chk-softprio" onchange="toggleOpt('soft_memory_priority', this.checked)" />
                 <span id="chk-softprio-lbl">低内存优先级 (Low / VeryLow)</span>
-              </label>
-            </div>
-              <label style="font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" id="chk-softprio" onchange="toggleOpt('soft_memory_priority', this.checked)" />
-                低内存优先级 (Low / VeryLow)
               </label>
             </div>
 
@@ -2180,6 +2193,7 @@ const dashboardHTML = `<!doctype html>
         lg_storm_s: "已阻断子进程狂刷句柄",
         lg_leak_k: "内核级异常目击次数",
         lg_leak_s: "历史僵尸内核对象追踪",
+        lg_leak_recent: "最近内核目击: {desc}",
         baseline_card_title: "7天本机空载基线守恒对比",
         baseline_card_sub: "验证连续运行后空载真实物理占用是否守恒",
         baseline_drift_calc: "统计中",
@@ -2235,7 +2249,7 @@ const dashboardHTML = `<!doctype html>
         self_stats: "Self {ws} · {hd} handles",
         btn_opt_text: "Deep Pressure Relief Now",
         btn_opt_hint: "Safely trims idle background/service working sets, file cache & standby pages",
-        btn_opt_ext_text: "Aggressive Global Relief (Services & Cache)",
+        btn_opt_ext_text: "Global Relief (Services & Cache)",
         mode_btn_guard: "Smart Dispatch",
         mode_btn_close: "Off",
         sync_connecting: "Connecting to local kernel telemetry...",
@@ -2244,27 +2258,27 @@ const dashboardHTML = `<!doctype html>
         overview_sub: "(Hover over the colored bar for detailed analysis)",
         commit_loading: "Loading commit and page lists...",
         active_procs: "Active Processes: {n}",
-        bd_apps_single: "App Private Working Set",
-        bd_apps_active: "Foreground & Active Exclusive",
-        bd_vid_label: "WSL2 / Vid Locked Pages",
-        bd_idle_label: "Idle Background Resident",
-        bd_zombie_label: "Zombie / Kernel Leaks",
-        bd_kernel_label: "Kernel Drivers · Shared & Cache",
-        bd_avail_label: "Available RAM (w/ Standby)",
+        bd_apps_single: "App Exclusive WS",
+        bd_apps_active: "Foreground & Active",
+        bd_vid_label: "WSL2 / Vid Locked",
+        bd_idle_label: "Background Idle",
+        bd_zombie_label: "Zombie / Kernel Leak",
+        bd_kernel_label: "Kernel / Shared / Cache",
+        bd_avail_label: "Available (w/ Standby)",
         bd_pct_app_single: "% · Private exclusive",
-        bd_pct_app_active: "% · Foreground/System exclusive",
+        bd_pct_app_active: "% · Foreground/System",
         bd_pct_vid: "% · Hyper-V locked",
         bd_pct_idle: "% · Idle non-foreground",
         bd_pct_zombie: "% · Kernel objects/PTE",
-        bd_pct_kernel: "% · Pool+shared maps",
-        bd_pct_avail: "% · Ready for immediate allocation",
-        sp_use_title: "RAM Utilization",
-        sp_apps_title: "App Private Working Set",
+        bd_pct_kernel: "% · Pool + shared maps",
+        bd_pct_avail: "% · Ready to allocate",
+        sp_use_title: "RAM Usage",
+        sp_apps_title: "App Exclusive WS",
         sp_spawn_title: "Spawn Storm Rate",
-        sp_avail_title: "Immediate Available RAM",
-        tab_smart: "Smart Sensing & Dispatch",
-        tab_truth: "Root Attribution & Storms",
-        tab_managed: "Processes & Journal",
+        sp_avail_title: "Instant Avail RAM",
+        tab_smart: "Smart Dispatch",
+        tab_truth: "Diagnostics & Storms",
+        tab_managed: "Processes & Logs",
         tab_ledger: "Quiet Ledger",
         badge_truth_healthy: "Healthy",
         badge_truth_alerts: "{n} Alerts",
@@ -2327,19 +2341,20 @@ const dashboardHTML = `<!doctype html>
         lg_storm_s: "Blocked recursive handle-flooding hosts",
         lg_leak_k: "Kernel Anomalies Witnessed",
         lg_leak_s: "Historical zombie kernel object observations",
+        lg_leak_recent: "Recent kernel sighting: {desc}",
         baseline_card_title: "7-Day Idle Baseline Conservation",
         baseline_card_sub: "Verifying whether idle physical footprint remains conserved over time",
         baseline_drift_calc: "Calculating",
         th_date: "Date",
-        th_min_used: "Min Real Used",
-        th_min_commit: "Min Private Commit",
-        th_vm_locked: "VM / Container Locked",
-        th_eprocess_peak: "Kernel Process Peak",
+        th_min_used: "Min Used",
+        th_min_commit: "Min Commit",
+        th_vm_locked: "VM Locked",
+        th_eprocess_peak: "Proc Peak",
         baseline_empty: "No multi-day records available yet",
         culprit_card_title: "Top 5 Background Bloat Culprits",
         culprit_card_sub: "Real attribution based on local dispatch ledger and verified savings",
         culprit_badge: "Real Attribution",
-        th_bg_proc: "Background Process",
+        th_bg_proc: "Process",
         th_trim_hits: "Hits",
         th_peak_ws: "Peak WS",
         th_saved_tot: "Total Saved",
@@ -2506,6 +2521,10 @@ const dashboardHTML = `<!doctype html>
       if (latestState) {
         renderState(latestState);
       }
+      requestAnimationFrame(() => {
+        syncTabSlider();
+        syncFilterSlider();
+      });
       showToast(currentLang === "en-US" ? "Switched to English" : "已切换为简体中文", 2000);
     }
 
