@@ -100,17 +100,31 @@ func ComputeBreakdown(snap winmem.Snapshot, privWS uint64, deep DeepDiagnosis) M
 	var zombie, kernel uint64
 	if rem > kernelTotal {
 		// Note: rem - kernelTotal includes shared working set (mapped DLLs/code) plus any
-		// leaked PFN/page-table stubs. Attribute up to 4 KB per excess leaked Process object
-		// (an exited EPROCESS has already torn down its user VADs/working set, so only kernel
-		// pool + ~1 page of residual PFN/handle overhead remains) so normal shared memory
-		// is never miscounted as zombie leak.
+		// leaked PFN/page-table stubs. When real SharedWSBytes is known from InspectDeep,
+		// subtract SharedWSBytes to isolate true non-WS dark physical RAM locked by dead
+		// EPROCESS stubs (~116 KB/obj from empirical regression); otherwise fall back to 4 KB/obj.
 		unaccountedInUse := rem - kernelTotal
 		if deep.Leak.Suspected {
+			var excessObjs int64
 			if deep.Leak.ProcessObjects > 0 {
-				excessObjs := int64(deep.Leak.ProcessObjects) - int64(deep.Leak.ActiveProcesses)
+				excessObjs = int64(deep.Leak.ProcessObjects) - int64(deep.Leak.ActiveProcesses)
 				if excessObjs < 0 {
 					excessObjs = 0
 				}
+			}
+			if deep.SharedWSBytes > 0 {
+				var darkInUse uint64
+				if rem > kernelTotal+deep.SharedWSBytes {
+					darkInUse = rem - kernelTotal - deep.SharedWSBytes
+				}
+				if deep.Leak.ProcessObjects > 0 {
+					estDark := uint64(excessObjs) * 116 * 1024
+					if darkInUse > estDark {
+						darkInUse = estDark
+					}
+				}
+				unaccountedInUse = darkInUse
+			} else if deep.Leak.ProcessObjects > 0 {
 				estUnaccounted := uint64(excessObjs) * 4 * 1024
 				if unaccountedInUse > estUnaccounted {
 					unaccountedInUse = estUnaccounted
@@ -412,7 +426,7 @@ func (e *Engine) trackSpawns(s Sample, family map[uint32]bool, act bool) (float6
 			if e.applyStormThrottle(p, family, reason, now) {
 				sp.Throttled = true
 				throttledCount++
-				if e.cfg.Actions.AutoLearnStormList {
+				if e.cfg.Actions.AutoLearnStormList && sp.ChildCount >= 15 && !e.hasProtectedAncestor(p.PID, byPID) {
 					e.learnSuppressedSpawner(p.Name)
 				}
 			}
@@ -622,28 +636,27 @@ func isKnownStormHost(name string) bool {
 	}
 }
 
-func (e *Engine) isStormProtected(name string) bool {
-	// Never throttle core OS/VM/AV daemons, active browsers, or IDEs/coding toolchains during a spawn storm,
-	// while still permitting third-party background updaters/agents such as LenovoPcManagerService.
-	switch strings.ToLower(name) {
-	case "system", "registry", "memory compression", "secure system",
-		"vmmem", "vmmem.exe", "vmmemwsl", "vmmemwsl.exe", "vmcompute.exe", "vmwp.exe",
-		"wsl.exe", "wslservice.exe", "docker desktop.exe", "com.docker.backend.exe", "com.docker.build.exe",
-		"smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
-		"services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
-		"explorer.exe", "audiodg.exe", "msmpeng.exe", "securityhealthservice.exe",
-		"nissrv.exe", "memora.exe", "hipsdaemon.exe",
-		"msedge.exe", "msedgewebview2.exe", "chrome.exe", "firefox.exe", "electron.exe",
-		"zcode.exe", "antigravity.exe", "code.exe", "devenv.exe", "omnicode.exe",
-		"language_server.exe", "language_server_windows_x64.exe",
-		"gopls.exe", "rust-analyzer.exe", "pyright.exe", "claude.exe", "codex.exe",
-		"go.exe", "node.exe", "npm.exe", "pnpm.exe", "python.exe", "git.exe", "bash.exe", "sh.exe",
-		"cargo.exe", "rustc.exe", "dotnet.exe", "msbuild.exe", "java.exe", "javaw.exe",
-		"wezterm-gui.exe", "windowsterminal.exe":
-		return true
-	default:
-		return false
+func (e *Engine) hasProtectedAncestor(pid uint32, byPID map[uint32]proc.Info) bool {
+	curPID := pid
+	for depth := 0; depth < 4; depth++ {
+		cur, ok := byPID[curPID]
+		if !ok || cur.ParentPID <= 4 || cur.ParentPID == curPID {
+			break
+		}
+		anc, ok := byPID[cur.ParentPID]
+		if !ok {
+			break
+		}
+		if e.isProtected(anc.Name) || e.isStormProtected(anc.Name) {
+			return true
+		}
+		curPID = anc.PID
 	}
+	return false
+}
+
+func (e *Engine) isStormProtected(name string) bool {
+	return config.IsDisallowedStormTarget(name)
 }
 
 func (e *Engine) isUserSuppressedSpawner(name string) bool {
@@ -985,6 +998,11 @@ func (e *Engine) trimCandidates(
 				effCooldown = 30 * time.Minute
 			}
 		}
+		if st, ok := e.softState[p.PID]; ok && st.MemoryPriority == proc.MemoryPriorityVeryLow && minWSMB >= 50 {
+			if e.isReboundProne(p.Name) || now.Sub(e.trimmedPIDs[p.PID]) < 30*time.Minute {
+				continue
+			}
+		}
 		if last, ok := e.trimmedPIDs[p.PID]; ok && now.Sub(last) < effCooldown {
 			continue
 		}
@@ -1288,6 +1306,9 @@ func (e *Engine) evaluateTrimRebounds(s Sample) {
 				continue
 			}
 			e.reboundCounts[key]++
+			if e.lg != nil {
+				e.lg.RecordReboundProc(key, e.reboundCounts[key])
+			}
 			if e.reboundCounts[key] == 2 {
 				e.record(journal.Entry{
 					Kind:   "adaptive_calib",

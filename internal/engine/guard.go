@@ -173,9 +173,15 @@ func (e *Engine) restoreEligibleQoS(procs []proc.Info, family map[uint32]bool, s
 
 		activeBurst := e.lastCPUPct[pid] >= 2.0
 		sameAppAsFG := !st.StormThrottled && familyNames[strings.ToLower(p.Name)]
-		// Keep aggressive spawn-storm throttlers suppressed while spawn rate remains elevated,
-		// unless they entered the foreground family or are explicitly protected.
-		if family[pid] || sameAppAsFG || e.isProtected(p.Name) || (activeBurst && !(st.StormThrottled && spawnRate >= 20)) {
+		// Keep StormThrottled processes suppressed while in background; only restore when
+		// entering foreground family, or explicitly whitelisted / protected.
+		var shouldRestore bool
+		if st.StormThrottled {
+			shouldRestore = family[pid] || familyNames[strings.ToLower(p.Name)] || e.isProtected(p.Name) || e.isStormProtected(p.Name)
+		} else {
+			shouldRestore = family[pid] || sameAppAsFG || e.isProtected(p.Name) || activeBurst
+		}
+		if shouldRestore {
 			restoreProcessControls(pid, st)
 			delete(e.softState, pid)
 			restores++
@@ -404,10 +410,11 @@ func (e *Engine) maybeRecordExtras(s Sample) {
 	}
 	e.lastExtrasAt = s.At
 	deep := InspectDeep(s.Snap, s.Procs, false)
+	bd := ComputeBreakdown(s.Snap, s.PrivateWS, deep)
 	leakNote := ""
 	if deep.Leak.Suspected {
 		leakNote = fmt.Sprintf("Process对象 %d 个 vs 活跃 %d 个（相关内核池 %.0f MB）",
 			deep.Leak.ProcessObjects, deep.Leak.ActiveProcesses, float64(deep.Leak.RelatedPoolByte)/(1<<20))
 	}
-	e.lg.RecordBaselineExtras(s.At, float64(deep.Extras.VidBytes)/(1<<20), deep.Leak.ProcessObjects, leakNote)
+	e.lg.RecordBaselineExtras(s.At, float64(deep.Extras.VidBytes)/(1<<20), deep.Leak.ProcessObjects, float64(bd.ZombieLeakBytes)/(1<<20), leakNote)
 }

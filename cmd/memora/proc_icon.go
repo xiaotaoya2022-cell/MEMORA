@@ -64,6 +64,7 @@ var (
 	procIconMu        sync.RWMutex
 	procIconCache     = map[string][]byte{}
 	procNamePathCache = map[string]string{}
+	procPIDPathCache  = map[uint32]string{}
 
 	enumWinOnce sync.Once
 	enumWinCB   uintptr
@@ -318,6 +319,13 @@ func queryProcessExePath(pid uint32) string {
 	if pid <= 4 {
 		return ""
 	}
+	procIconMu.RLock()
+	cached, ok := procPIDPathCache[pid]
+	procIconMu.RUnlock()
+	if ok {
+		return cached
+	}
+
 	h, _, _ := procIconOpenProcess.Call(processQueryLimitedInformation, 0, uintptr(pid))
 	if h == 0 {
 		return ""
@@ -335,7 +343,14 @@ func queryProcessExePath(pid uint32) string {
 	if r == 0 || size == 0 {
 		return ""
 	}
-	return syscall.UTF16ToString(buf[:size])
+	path := syscall.UTF16ToString(buf[:size])
+	procIconMu.Lock()
+	if len(procPIDPathCache) >= maxNamePathCache {
+		procPIDPathCache = map[uint32]string{}
+	}
+	procPIDPathCache[pid] = path
+	procIconMu.Unlock()
+	return path
 }
 
 func extractEmbeddedPEIconPNG(exePath string) []byte {

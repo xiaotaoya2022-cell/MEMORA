@@ -47,41 +47,95 @@ type Entry struct {
 
 // Journal is a rotating JSONL writer.
 type Journal struct {
-	mu    sync.Mutex
-	path  string
-	file  *os.File
-	limit int64
+	mu             sync.Mutex
+	path           string
+	file           *os.File
+	limit          int64
+	lastStormByPID map[uint32]time.Time
 }
 
-const defaultLimit = 8 << 20 // 8 MiB
+const defaultLimit = 2 << 20 // 2 MiB
 
-// Open prepares the journal under dir, creating it if needed.
+// Open prepares the journal under dir, creating it if needed and compacting oversized legacy logs.
 func Open(dir string) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	j := &Journal{
-		path:  filepath.Join(dir, "journal.jsonl"),
-		limit: defaultLimit,
+		path:           filepath.Join(dir, "journal.jsonl"),
+		limit:          defaultLimit,
+		lastStormByPID: make(map[uint32]time.Time),
+	}
+	if info, err := os.Stat(j.path); err == nil && info.Size() > defaultLimit {
+		compactJournal(j.path, 1200)
 	}
 	return j, nil
+}
+
+func compactJournal(path string, keep int) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	entries := scanLastEntries(f, keep*3)
+	_ = f.Close()
+	if len(entries) == 0 {
+		return
+	}
+	filtered := make([]Entry, 0, len(entries))
+	lastStorm := make(map[uint32]time.Time)
+	for _, e := range entries {
+		if e.Kind == "storm_throttle" && len(e.Targets) == 1 && e.Targets[0].PID != 0 {
+			pid := e.Targets[0].PID
+			if prev, ok := lastStorm[pid]; ok && e.Time.Sub(prev) < 5*time.Minute {
+				continue
+			}
+			lastStorm[pid] = e.Time
+		}
+		filtered = append(filtered, e)
+	}
+	if len(filtered) > keep {
+		filtered = filtered[len(filtered)-keep:]
+	}
+	var out []byte
+	for _, e := range filtered {
+		if b, err := json.Marshal(e); err == nil {
+			out = append(out, b...)
+			out = append(out, '\n')
+		}
+	}
+	if len(out) > 0 {
+		_ = os.WriteFile(path, out, 0o644)
+	}
 }
 
 // Path returns the active journal file.
 func (j *Journal) Path() string { return j.path }
 
-// Write appends one entry.
+// Write appends one entry, deduplicating repeated storm_throttle emissions for the same PID within 5m.
 func (j *Journal) Write(e Entry) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if e.Kind == "storm_throttle" && len(e.Targets) == 1 && e.Targets[0].PID != 0 {
+		pid := e.Targets[0].PID
+		if prev, ok := j.lastStormByPID[pid]; ok && e.Time.Sub(prev) < 5*time.Minute {
+			return nil
+		}
+		if len(j.lastStormByPID) > 512 {
+			j.lastStormByPID = make(map[uint32]time.Time)
+		}
+		j.lastStormByPID[pid] = e.Time
+	}
+
 	data, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-
-	j.mu.Lock()
-	defer j.mu.Unlock()
 
 	if j.file == nil {
 		f, err := os.OpenFile(j.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

@@ -586,3 +586,55 @@ func TestCaptureProbeMetricsAndDiffShrunk(t *testing.T) {
 		t.Fatalf("unexpected Session 0 protection classification")
 	}
 }
+
+func TestComputeBreakdownDarkMemoryWithSharedWSAndStormNoPingPong(t *testing.T) {
+	// Simulate 4-day telemetry state: InUse=27.30 GiB, PrivWS=7.19 GiB, SharedWS=5.68 GiB,
+	// KernelTotal=3.49 GiB, ProcessObjects=102467 (401 active), RelatedPoolByte=780 MiB.
+	snap := winmem.Snapshot{
+		TotalPhys:   uint64(39*1024+195) << 20,
+		AvailPhys:   uint64(11*1024+911) << 20,
+		KernelTotal: uint64(3*1024+502) << 20,
+	}
+	deep := DeepDiagnosis{
+		SharedWSBytes: 5680 << 20,
+		Leak: KernelLeakSummary{
+			Suspected:       true,
+			ProcessObjects:  102467,
+			ActiveProcesses: 401,
+			RelatedPoolByte: 780 << 20,
+		},
+	}
+	bd := ComputeBreakdown(snap, uint64(7*1024+195)<<20, deep)
+	// True dark EPROCESS memory (~10.95 GiB) + pool (~0.76 GiB) ~= 11.7 GiB.
+	if bd.ZombieLeakBytes < 10<<30 || bd.ZombieLeakBytes > 13<<30 {
+		t.Fatalf("expected ZombieLeakBytes around 11.7 GiB with SharedWS isolated, got %.2f GiB", float64(bd.ZombieLeakBytes)/(1<<30))
+	}
+	// SharedWS must stay inside KernelDriverBytes (slot 4), not pushed into slot 3.
+	if bd.KernelDriverBytes < deep.SharedWSBytes {
+		t.Fatalf("expected KernelDriverBytes >= SharedWSBytes, got %.2f GiB", float64(bd.KernelDriverBytes)/(1<<30))
+	}
+
+	// Verify restoreEligibleQoS does NOT un-throttle a background StormThrottled process on CPU burst alone.
+	eng := New(config.Default(), nil)
+	eng.softState[9001] = softControl{
+		Name:           "Nexus.exe",
+		MemoryPriority: proc.MemoryPriorityLow,
+		EcoQoS:         true,
+		BelowNormal:    true,
+		StormThrottled: true,
+	}
+	eng.lastCPUPct[9001] = 15.0
+	procs := []proc.Info{
+		{PID: 100, Name: "Code.exe", SessionID: 1},
+		{PID: 9001, Name: "Nexus.exe", SessionID: 1, WorkingSet: 100 << 20},
+	}
+	eng.restoreEligibleQoS(procs, map[uint32]bool{100: true}, 2.0)
+	if _, stillThrottled := eng.softState[9001]; !stillThrottled {
+		t.Fatalf("expected background StormThrottled process 9001 to remain throttled even during background CPU burst")
+	}
+	// Moving PID 9001 into foreground family MUST restore it.
+	eng.restoreEligibleQoS(procs, map[uint32]bool{9001: true}, 2.0)
+	if _, stillThrottled := eng.softState[9001]; stillThrottled {
+		t.Fatalf("expected foreground StormThrottled process 9001 to be restored immediately")
+	}
+}

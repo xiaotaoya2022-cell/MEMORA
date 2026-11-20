@@ -95,3 +95,31 @@ func TestDefaultAutoLearnStormListAndSuppressedSpawners(t *testing.T) {
 		t.Fatalf("expected empty default SuppressedSpawners to avoid overfitting, got %v", cfg.SuppressedSpawners)
 	}
 }
+
+func TestIsDisallowedStormTargetAndSanitizeFilters(t *testing.T) {
+	for _, blocked := range []string{"go.exe", "git.exe", "node.exe", "bash.exe", "nexus setup 0.2.44.exe"} {
+		if !IsDisallowedStormTarget(blocked) {
+			t.Fatalf("expected %q to be disallowed in storm list", blocked)
+		}
+	}
+	if IsDisallowedStormTarget("Nexus.exe") {
+		t.Fatalf("did not expect Nexus.exe to be hardcoded disallowed")
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("LOCALAPPDATA", tmp)
+	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"mode":"guard","interval_seconds":10,"suppressed_spawners":["go.exe","git.exe","node.exe","bash.exe","nexus setup 0.2.44.exe","nexus.exe"]}`
+	if err := os.WriteFile(Path(), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(loaded.SuppressedSpawners) != 1 || loaded.SuppressedSpawners[0] != "nexus.exe" {
+		t.Fatalf("expected sanitize to retain only nexus.exe, got %v", loaded.SuppressedSpawners)
+	}
+}

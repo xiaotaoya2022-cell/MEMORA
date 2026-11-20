@@ -207,31 +207,47 @@ func ObserveProbeSample(s Sample) {
 	if lastProbeSample != nil && s.At.Sub(lastProbeSample.At) <= 90*time.Second {
 		if s.Snap.AvailPhys > lastProbeSample.Snap.AvailPhys+externalJumpThreshold &&
 			(lastSelfActionAt.IsZero() || s.At.Sub(lastSelfActionAt) > 25*time.Second) {
-			beforeM := lastProbeMetrics
-			if beforeM == nil {
-				bm := CaptureProbeMetrics(*lastProbeSample, true)
-				beforeM = &bm
-			}
-			afterM := CaptureProbeMetrics(s, true)
 			topShrunk := diffShrunkProcesses(lastProbeSample.Procs, s.Procs, 15)
-			rec := ProbeRecord{
-				At:              s.At,
-				Kind:            "external_boost",
-				Note:            "检测到非 MEMORA 触发的大幅内存释放（例如联想一键加速/外部清理工具）",
-				Before:          beforeM,
-				After:           &afterM,
-				AvailDeltaMB:    float64(int64(afterM.AvailBytes)-int64(beforeM.AvailBytes)) / (1 << 20),
-				SharedWSDeltaMB: float64(int64(afterM.SharedWSBytes)-int64(beforeM.SharedWSBytes)) / (1 << 20),
-				PrivWSDeltaMB:   float64(int64(afterM.PrivateWSBytes)-int64(beforeM.PrivateWSBytes)) / (1 << 20),
-				StandbyDeltaMB:  float64(int64(afterM.StandbyBytes)-int64(beforeM.StandbyBytes)) / (1 << 20),
-				SysCacheDeltaMB: float64(int64(afterM.SystemCacheBytes)-int64(beforeM.SystemCacheBytes)) / (1 << 20),
-				ProcObjDelta:    int64(afterM.ProcessObjects) - int64(beforeM.ProcessObjects),
-				TopShrunkProcs:  topShrunk,
+			prevShared := uint64(0)
+			if lastProbeSample.WS > lastProbeSample.PrivateWS {
+				prevShared = lastProbeSample.WS - lastProbeSample.PrivateWS
 			}
-			appendProbeRecordLocked(rec)
-			lastHourlyProbeAt = s.At
-			lastHourlyObjs = afterM.ProcessObjects
-			lastProbeMetrics = &afterM
+			curShared := uint64(0)
+			if s.WS > s.PrivateWS {
+				curShared = s.WS - s.PrivateWS
+			}
+			sharedDelta := int64(curShared) - int64(prevShared)
+			standbyDelta := int64(s.Snap.Pages.Standby) - int64(lastProbeSample.Snap.Pages.Standby)
+			isGlobalBoost := len(topShrunk) >= 6 ||
+				standbyDelta <= -(1536<<20) ||
+				(len(topShrunk) >= 3 && sharedDelta <= -(1024<<20))
+
+			if isGlobalBoost {
+				beforeM := lastProbeMetrics
+				if beforeM == nil {
+					bm := CaptureProbeMetrics(*lastProbeSample, true)
+					beforeM = &bm
+				}
+				afterM := CaptureProbeMetrics(s, true)
+				rec := ProbeRecord{
+					At:              s.At,
+					Kind:            "external_boost",
+					Note:            "检测到非 MEMORA 触发的全局内存释放（例如联想一键加速/外部清理工具）",
+					Before:          beforeM,
+					After:           &afterM,
+					AvailDeltaMB:    float64(int64(afterM.AvailBytes)-int64(beforeM.AvailBytes)) / (1 << 20),
+					SharedWSDeltaMB: float64(int64(afterM.SharedWSBytes)-int64(beforeM.SharedWSBytes)) / (1 << 20),
+					PrivWSDeltaMB:   float64(int64(afterM.PrivateWSBytes)-int64(beforeM.PrivateWSBytes)) / (1 << 20),
+					StandbyDeltaMB:  float64(int64(afterM.StandbyBytes)-int64(beforeM.StandbyBytes)) / (1 << 20),
+					SysCacheDeltaMB: float64(int64(afterM.SystemCacheBytes)-int64(beforeM.SystemCacheBytes)) / (1 << 20),
+					ProcObjDelta:    int64(afterM.ProcessObjects) - int64(beforeM.ProcessObjects),
+					TopShrunkProcs:  topShrunk,
+				}
+				appendProbeRecordLocked(rec)
+				lastHourlyProbeAt = s.At
+				lastHourlyObjs = afterM.ProcessObjects
+				lastProbeMetrics = &afterM
+			}
 		}
 	}
 

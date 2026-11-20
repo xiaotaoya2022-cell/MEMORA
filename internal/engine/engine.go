@@ -195,6 +195,13 @@ func New(cfg config.Config, jr *journal.Journal) *Engine {
 // SetLedger attaches an optional long-term Quiet Ledger to the engine.
 func (e *Engine) SetLedger(lg *ledger.Ledger) {
 	e.lg = lg
+	if lg != nil {
+		if snap := lg.ReboundProcsSnapshot(); len(snap) > 0 {
+			for k, v := range snap {
+				e.reboundCounts[k] = v
+			}
+		}
+	}
 }
 
 // SetMode switches between "guard" and "observe"; switching away from guard
@@ -287,11 +294,13 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	a.SmartTier, a.SmartLabel = computeSmartTier(a.AvailPct, tightNUMA)
 
 	canAct := opts.Act && e.cfg.Mode == "guard" && !a.FullscreenQuiet
+	if opts.Act && e.cfg.Mode == "guard" {
+		e.restoreEligibleQoS(s.Procs, family, a.SpawnRatePerMin)
+	}
 	a.SpawnRatePerMin, a.TopSpawners = e.trackSpawns(s, family, canAct)
 
 	acted := false
 	if opts.Act && e.cfg.Mode == "guard" {
-		e.restoreEligibleQoS(s.Procs, family, a.SpawnRatePerMin)
 		if !a.FullscreenQuiet {
 			if e.cfg.Actions.SmartMemorySchedule {
 				if e.stepSmartSchedule(opts, s, &a, family) {

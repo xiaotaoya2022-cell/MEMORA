@@ -159,7 +159,15 @@ type dashboardServer struct {
 	recentJ        []journal.Entry
 	culprits       []bloatCulpritDTO
 	lastCulpritsAt time.Time
+	lastClientAt   time.Time
 	history        []historyPoint
+}
+
+func (d *dashboardServer) isClientActiveLocked() bool {
+	if !d.lastClientAt.IsZero() && time.Since(d.lastClientAt) < 15*time.Second {
+		return true
+	}
+	return dashHWND.Load() != 0 && dashHiddenSince.Load() == 0
 }
 
 func newDashboardServer(
@@ -269,8 +277,14 @@ func (d *dashboardServer) UpdateFromEngine(eng *engine.Engine, a engine.Assessme
 
 	d.mu.Lock()
 	procs := d.lastProcs
-	shouldDeep := forceDeep || !d.hasDeep || time.Since(d.lastDeepAt) >= 15*time.Second
-	shouldCulprits := forceDeep || d.lastCulpritsAt.IsZero() || time.Since(d.lastCulpritsAt) >= 10*time.Second
+	deepInterval := 15 * time.Second
+	culpritInterval := 10 * time.Second
+	if !d.isClientActiveLocked() {
+		deepInterval = 120 * time.Second
+		culpritInterval = 120 * time.Second
+	}
+	shouldDeep := forceDeep || !d.hasDeep || time.Since(d.lastDeepAt) >= deepInterval
+	shouldCulprits := forceDeep || d.lastCulpritsAt.IsZero() || time.Since(d.lastCulpritsAt) >= culpritInterval
 	d.mu.Unlock()
 
 	if len(procs) == 0 && shouldDeep {
@@ -367,13 +381,19 @@ func (d *dashboardServer) snapshotState() dashboardState {
 		}
 		first := win[0]
 		latest := win[len(win)-1]
-		drift := latest.MinInUseMB - first.MinInUseMB
+		firstVal := first.MinInUseMB
+		latestVal := latest.MinInUseMB
+		if first.NetMinInUseMB > 0 && latest.NetMinInUseMB > 0 {
+			firstVal = first.NetMinInUseMB
+			latestVal = latest.NetMinInUseMB
+		}
+		drift := latestVal - firstVal
 		baseCmp = baselineComparisonDTO{
 			DaysTracked:      len(win),
 			FirstDate:        first.Date,
-			FirstMinInUseMB:  first.MinInUseMB,
+			FirstMinInUseMB:  firstVal,
 			LatestDate:       latest.Date,
-			LatestMinInUseMB: latest.MinInUseMB,
+			LatestMinInUseMB: latestVal,
 			DriftMB:          drift,
 			Stable:           drift <= 512,
 		}
@@ -472,6 +492,9 @@ func (d *dashboardServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	d.mu.Lock()
+	d.lastClientAt = time.Now()
+	d.mu.Unlock()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(strings.Replace(dashboardHTML, "__MEMORA_TOKEN__", d.token, 1)))
@@ -508,6 +531,13 @@ func (d *dashboardServer) handleState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+	d.mu.Lock()
+	d.lastClientAt = time.Now()
+	staleDeep := !d.hasDeep || time.Since(d.lastDeepAt) >= 15*time.Second
+	d.mu.Unlock()
+	if staleDeep {
+		_, _, _ = d.refreshSnapshotNow(false)
 	}
 	writeJSON(w, http.StatusOK, d.snapshotState())
 }
@@ -1019,8 +1049,31 @@ if ($actions.Count -eq 0 -and $notes.Count -eq 0) {
 `
 	out, cmdErr := runHiddenPowerShell(ctx, script, elevateIfNeeded)
 	engine.ResetDriverScanCache()
-	clean := strings.TrimSpace(strings.TrimPrefix(string(out), "\xef\xbb\xbf"))
+	clean := stripPowerShellCLIXML(string(out))
 	return clean, cmdErr
+}
+
+func stripPowerShellCLIXML(s string) string {
+	s = strings.TrimSpace(strings.TrimPrefix(s, "\xef\xbb\xbf"))
+	s = strings.ReplaceAll(s, "#< CLIXML\r\n", "")
+	s = strings.ReplaceAll(s, "#< CLIXML\n", "")
+	s = strings.ReplaceAll(s, "#< CLIXML", "")
+	for {
+		start := strings.Index(s, "<Objs ")
+		if start < 0 {
+			start = strings.Index(s, "<Objs>")
+		}
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start:], "</Objs>")
+		if end < 0 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+end+len("</Objs>"):]
+	}
+	return strings.TrimSpace(s)
 }
 
 func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Request) {
@@ -1093,7 +1146,7 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 }
 
 func runHiddenPowerShell(ctx context.Context, script string, elevate bool) ([]byte, error) {
-	utf8Header := "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n"
+	utf8Header := "$ProgressPreference = 'SilentlyContinue'; [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n"
 	if !elevate {
 		encoded := encodePowerShellCommand(utf8Header + script)
 		cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
@@ -1249,7 +1302,13 @@ func aggregateJournalTargets(entries []journal.Entry, adaptiveProcs []string, to
 	}
 	procMap := map[string]*bloatCulpritDTO{}
 	for _, e := range entries {
+		if e.Kind == "storm_throttle" {
+			continue
+		}
 		for _, tgt := range e.Targets {
+			if config.ShouldPruneSuppressedSpawner(tgt.Name) {
+				continue
+			}
 			k := strings.ToLower(strings.TrimSpace(tgt.Name))
 			if k == "" {
 				continue

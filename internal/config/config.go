@@ -190,8 +190,14 @@ func sanitize(cfg *Config) bool {
 		changed = true
 	} else {
 		deduped := dedupeLowerNames(cfg.SuppressedSpawners)
-		if len(deduped) != len(cfg.SuppressedSpawners) {
-			cfg.SuppressedSpawners = deduped
+		filtered := make([]string, 0, len(deduped))
+		for _, item := range deduped {
+			if !ShouldPruneSuppressedSpawner(item) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) != len(cfg.SuppressedSpawners) {
+			cfg.SuppressedSpawners = filtered
 			changed = true
 		}
 	}
@@ -227,6 +233,68 @@ func dedupeLowerNames(items []string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// ShouldPruneSuppressedSpawner reports whether an entry in SuppressedSpawners (or UI logs)
+// should be pruned because it is protected or belongs to uninstalled Lenovo PC Manager.
+func ShouldPruneSuppressedSpawner(name string) bool {
+	if IsDisallowedStormTarget(name) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "lenovopcmanagerservice.exe", "lenovopcmanager.exe", "lnvsvcfdn.exe":
+		return !hasLenovoPCManagerInstalled()
+	default:
+		return false
+	}
+}
+
+// IsDisallowedStormTarget reports whether a process name belongs to protected OS daemons,
+// developer CLI toolchains, IDEs, browsers, or temporary installers
+// that should never be throttled or learned into storm suppression lists.
+func IsDisallowedStormTarget(name string) bool {
+	low := strings.ToLower(strings.TrimSpace(name))
+	if low == "" {
+		return true
+	}
+	if strings.Contains(low, "setup") || strings.Contains(low, "install") || strings.Contains(low, "unins") {
+		return true
+	}
+	switch low {
+	case "system", "registry", "memory compression", "secure system",
+		"vmmem", "vmmem.exe", "vmmemwsl", "vmmemwsl.exe", "vmcompute.exe", "vmwp.exe",
+		"wsl.exe", "wslservice.exe", "docker.exe", "docker desktop.exe", "com.docker.backend.exe", "com.docker.build.exe",
+		"smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+		"services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
+		"explorer.exe", "audiodg.exe", "msmpeng.exe", "securityhealthservice.exe",
+		"nissrv.exe", "memora.exe", "hipsdaemon.exe",
+		"msedge.exe", "msedgewebview2.exe", "chrome.exe", "chrome-headless-shell.exe", "firefox.exe", "electron.exe",
+		"zcode.exe", "antigravity.exe", "code.exe", "devenv.exe", "omnicode.exe",
+		"language_server.exe", "language_server_windows_x64.exe",
+		"gopls.exe", "rust-analyzer.exe", "pyright.exe", "claude.exe", "codex.exe",
+		"go.exe", "node.exe", "npm.exe", "pnpm.exe", "yarn.exe", "bun.exe", "deno.exe",
+		"python.exe", "pythonw.exe", "pip.exe", "uv.exe",
+		"git.exe", "bash.exe", "sh.exe", "zsh.exe", "pwsh.exe", "powershell.exe", "cmd.exe", "conhost.exe",
+		"cargo.exe", "rustc.exe", "rustup.exe", "gcc.exe", "g++.exe", "clang.exe", "cl.exe", "link.exe",
+		"dotnet.exe", "msbuild.exe", "java.exe", "javaw.exe", "javac.exe",
+		"cmake.exe", "ninja.exe", "make.exe", "rg.exe", "fd.exe", "fzf.exe",
+		"wezterm-gui.exe", "windowsterminal.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasLenovoPCManagerInstalled() bool {
+	for _, p := range []string{
+		`C:\Program Files (x86)\Lenovo\PCManager`,
+		`C:\Program Files\Lenovo\PCManager`,
+	} {
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // Save writes the settings as indented JSON.

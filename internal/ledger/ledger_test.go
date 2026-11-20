@@ -24,7 +24,8 @@ func TestLedgerPersistenceAndRates(t *testing.T) {
 	lg.RecordDynamicReclaim(512)
 	lg.RecordStormSuppression(4)
 	lg.RecordTrim(420, true)
-	lg.RecordBaselineExtras(now, 6144, 180000, "180k zombies")
+	lg.RecordBaselineExtras(now, 6144, 180000, 1200, "180k zombies")
+	lg.RecordReboundProc("chrome.exe", 3)
 	if err := lg.Flush(); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}

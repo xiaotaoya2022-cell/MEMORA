@@ -72,9 +72,12 @@ type DeepDiagnosis struct {
 	TopPagedTags         []PoolFinding           `json:"top_paged_tags,omitempty"`
 	ProcGroups           []ProcGroup             `json:"proc_groups,omitempty"`
 	HandleLeakers        []ProcGroup             `json:"handle_leakers,omitempty"`
-	DriversScanned       bool                    `json:"drivers_scanned"`
-	ConflictServices     []winmem.ServiceState   `json:"conflict_services,omitempty"`
-	ConflictMitigated    bool                    `json:"conflict_mitigated"`
+	DriversScanned        bool                    `json:"drivers_scanned"`
+	TotalWSBytes          uint64                  `json:"total_ws_bytes,omitempty"`
+	SharedWSBytes         uint64                  `json:"shared_ws_bytes,omitempty"`
+	ConflictServices      []winmem.ServiceState   `json:"conflict_services,omitempty"`
+	ConflictMitigated     bool                    `json:"conflict_mitigated"`
+	ConflictPendingReboot bool                    `json:"conflict_pending_reboot"`
 }
 
 // GroupProcesses aggregates processes by case-insensitive image name, sorted by Private bytes desc.
@@ -110,6 +113,12 @@ func GroupProcesses(procs []proc.Info) []ProcGroup {
 	return out
 }
 
+var (
+	lastHoldersMu sync.Mutex
+	lastHoldersAt time.Time
+	lastHolders   []ProcessHandleLeaker
+)
+
 // InspectDeep gathers SystemExtras (Vid/NUMA), ObjectTypes, PoolTags, and optionally
 // maps non-core high-usage or zero-free pool tags back to loaded driver files.
 func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) DeepDiagnosis {
@@ -118,6 +127,16 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 		ProcGroups: GroupProcesses(procs),
 	}
 	d.Leak.ActiveProcesses = len(procs)
+
+	var totalWS, privWS uint64
+	for _, p := range procs {
+		totalWS += p.WorkingSet
+		privWS += p.PrivateWS
+	}
+	d.TotalWSBytes = totalWS
+	if totalWS > privWS {
+		d.SharedWSBytes = totalWS - privWS
+	}
 
 	if objs, err := winmem.ReadObjectTypes(); err == nil {
 		d.HasObjectTypes = true
@@ -152,7 +171,16 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 	d.Leak.Suspected = isProcessObjectLeakSuspected(d.Leak)
 
 	if d.Leak.Suspected {
-		if holders, err := winmem.ReadProcessHandleHolders(200); err == nil && len(holders) > 0 {
+		lastHoldersMu.Lock()
+		cached := lastHolders
+		fresh := !lastHoldersAt.IsZero() && time.Since(lastHoldersAt) < 60*time.Second
+		lastHoldersMu.Unlock()
+
+		if !matchDrivers && fresh {
+			if len(cached) > 0 {
+				d.ProcessHandleHolders = append([]ProcessHandleLeaker(nil), cached...)
+			}
+		} else if holders, err := winmem.ReadProcessHandleHolders(200); err == nil && len(holders) > 0 {
 			nameByPID := make(map[uint32]string, len(procs))
 			for _, p := range procs {
 				nameByPID[p.PID] = p.Name
@@ -174,6 +202,10 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 			if len(d.ProcessHandleHolders) > 10 {
 				d.ProcessHandleHolders = d.ProcessHandleHolders[:10]
 			}
+			lastHoldersMu.Lock()
+			lastHolders = append([]ProcessHandleLeaker(nil), d.ProcessHandleHolders...)
+			lastHoldersAt = time.Now()
+			lastHoldersMu.Unlock()
 		}
 	}
 
@@ -187,8 +219,21 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 		"sysdiag", "ESurfingSvr",
 	})
 	d.ConflictMitigated = computeConflictMitigated(d.ConflictServices)
+	d.ConflictPendingReboot = computeConflictPendingReboot(d.ConflictServices)
 
 	return d
+}
+
+func computeConflictPendingReboot(svcs []winmem.ServiceState) bool {
+	for _, s := range svcs {
+		switch strings.ToLower(s.Name) {
+		case "lnvscenter", "lrtp", "netrtp":
+			if s.Exists && s.Running && strings.EqualFold(s.StartType, "disabled") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func computeConflictMitigated(svcs []winmem.ServiceState) bool {

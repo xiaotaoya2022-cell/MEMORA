@@ -2649,10 +2649,20 @@ const dashboardHTML = `<!doctype html>
       syncModeSwitchUI(isGuard);
 
       const baseEl = document.getElementById("baseline-pill");
-      if (isGuard) {
-        baseEl.textContent = "空载基线守护 · 托管 " + (a.soft_managed || 0) + " 个";
+      if (bd.zombie_leak_bytes >= 4 * 1073741824 && deep.conflict_pending_reboot) {
+        baseEl.textContent = "待重启释放 " + fmtBytes(bd.zombie_leak_bytes) + " 历史内核残留";
+        baseEl.style.color = "#b45309";
+        baseEl.style.borderColor = "#fde68a";
+        baseEl.style.background = "#fffbeb";
       } else {
-        baseEl.textContent = "调度已关闭 · 仅真实观测";
+        baseEl.style.color = "";
+        baseEl.style.borderColor = "";
+        baseEl.style.background = "";
+        if (isGuard) {
+          baseEl.textContent = "空载基线守护 · 托管 " + (a.soft_managed || 0) + " 个";
+        } else {
+          baseEl.textContent = "调度已关闭 · 仅真实观测";
+        }
       }
 
       const upd = s.updated_at ? new Date(s.updated_at).toLocaleTimeString() : "--";
@@ -2852,6 +2862,7 @@ const dashboardHTML = `<!doctype html>
         });
 
         const mitigated = !!(deep.conflict_mitigated);
+        const pendingReboot = !!(deep.conflict_pending_reboot);
         const svcChips = (deep.conflict_services || [])
           .filter(s => s && s.exists)
           .map(s => {
@@ -2863,7 +2874,9 @@ const dashboardHTML = `<!doctype html>
         const leakers = deep.handle_leakers || [];
         const leakerStr = leakers.map(g => esc(g.name) + " (" + (g.handles || 0) + " 句柄)").join("、");
         const extraDiag = [];
-        if (hasDualHuorong && mitigated) {
+        if (pendingReboot) {
+          extraDiag.push("<b>冲突驱动自启已永久关闭 (Start=4)</b>：因本机已连续运行多日未重启，本次开机初期驻留的内核钩子仍锁死约 <b>" + fmtBytes(bd.zombie_leak_bytes) + "</b> 历史进程对象与 PFN 物理页；<b>择机重启一次电脑即可彻底释放这 " + fmtBytes(bd.zombie_leak_bytes) + " 内存并永久停用该驱动</b>；");
+        } else if (hasDualHuorong && mitigated) {
           extraDiag.push("<b>冲突驱动已阻断</b>：联想冲突驱动与宿主服务当前处于停止/禁用状态；下方高占用的历史内核 <code>EPROCESS</code> / 对象残留形成于阻断之前，用户态无法抹除，将在下次电脑重启后清零；");
         } else if (hasDualHuorong) {
           extraDiag.push("<b>内核过滤驱动冲突 (cckT / 安全钩子)</b>：检测到联想内置安全驱动 (<code>lnvscenter.sys</code>) 与独立火绒驱动 (<code>sysdiag.sys</code>) 共存，极易在 Ring 0 导致进程退出引用计数未归零；");
