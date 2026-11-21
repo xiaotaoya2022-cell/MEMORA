@@ -123,11 +123,19 @@ const dashboardHTML = `<!doctype html>
       user-select: none;
       cursor: default;
     }
-    .topbar-left, .topbar-right {
+    .topbar-left {
       display: flex;
       align-items: center;
       gap: 9px;
+      flex: 1;
       min-width: 0;
+      overflow: hidden;
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
     }
     .topbar-logo {
       width: 22px;
@@ -1495,6 +1503,7 @@ const dashboardHTML = `<!doctype html>
       .topbar-title { font-size: 13px; }
       .tab-btn { padding: 5px 8px; font-size: 12px; gap: 4px; }
       .btn-ghost { font-size: 11.5px; padding: 7px 8px; white-space: normal; text-align: center; line-height: 1.25; }
+      .topbar-badge#baseline-pill { display: none; }
     }
     @media (max-width: 1040px) {
       .shell { grid-template-columns: 238px 1fr; gap: 10px; padding: 9px 10px; }
@@ -2218,15 +2227,15 @@ const dashboardHTML = `<!doctype html>
         strat_managed: "能效托管"
       },
       "en-US": {
-        topbar_title: "MEMORA · Performance Dispatch & Memory Truth Center",
-        admin_ok: "Administrator Privileges Ready",
-        admin_std: "Standard Privileges (Elevation prompts UAC)",
-        admin_checking: "Checking Privileges",
-        baseline_guarding: "Idle Baseline Guarding",
-        baseline_managed: "Idle Baseline Guarding · {n} managed",
-        baseline_reboot: "Reboot pending to free {size} kernel residues",
-        baseline_closed: "Dispatch Off · Observation Only",
-        export_report: "Export 24h Diagnostic Report",
+        topbar_title: "MEMORA · Performance & Memory Center",
+        admin_ok: "Admin Ready",
+        admin_std: "Standard User",
+        admin_checking: "Checking...",
+        baseline_guarding: "Baseline Guarding",
+        baseline_managed: "Baseline Guard · {n}",
+        baseline_reboot: "Reboot pending ({size} residues)",
+        baseline_closed: "Dispatch Off · Observing",
+        export_report: "Export 24h Report",
         tip_min_title: "Minimize to Taskbar",
         tip_min_sub: "Keep window on taskbar, ready for instant access",
         tip_max_expand: "Full Workspace View",
@@ -2311,19 +2320,19 @@ const dashboardHTML = `<!doctype html>
         th_status: "Status",
         th_action: "Action",
         spawner_empty: "No high-frequency child spawners observed",
-        managed_title: "Managed Background Processes",
+        managed_title: "Managed Processes",
         managed_summary: " · {n} managed",
         btn_restore_all: "Release All",
         inp_search_ph: "Search process or PID...",
-        whitelist_title: "Process Whitelist (Never trimmed, demoted, or suppressed)",
-        inp_wl_ph: "Enter process name to whitelist, e.g. OmniCode.exe",
-        btn_add_wl: "+ Add Whitelist",
+        whitelist_title: "Whitelist (Protected)",
+        inp_wl_ph: "Add process to whitelist, e.g. OmniCode.exe",
+        btn_add_wl: "+ Whitelist",
         filter_all: "All",
         filter_storm: "Storm Suppressed",
         filter_verylow: "VeryLow Tier",
         filter_low: "Low Tier",
-        journal_title: "Real-time Dispatch & Suppression Journal",
-        journal_sub: "Recent 30 real actions (full 24h JSON export available)",
+        journal_title: "Dispatch & Storm Journal",
+        journal_sub: "Recent 30 actions (24h JSON export)",
         btn_export_json: "Export JSON",
         lg_hours_k: "Quiet Stewardship",
         lg_hours_s: "Total silent runtime in background",
@@ -2427,6 +2436,9 @@ const dashboardHTML = `<!doctype html>
       setTxt("mode-observe", t("mode_btn_close"));
       setTxt("overview-title-text", t("overview_title"));
       setTxt("overview-sub-text", t("overview_sub"));
+      setTxt("bd-zombie-label", t("bd_zombie_label"));
+      setTxt("bd-kernel-label", t("bd_kernel_label"));
+      setTxt("bd-avail-label", t("bd_avail_label"));
 
       setTxt("sp-use-lbl", t("sp_use_title"));
       setTxt("sp-apps-lbl", t("sp_apps_title"));
@@ -3313,10 +3325,10 @@ const dashboardHTML = `<!doctype html>
       const alertCount = renderDiagCards(deep, bd, a, s.is_admin);
       const badgeTruth = document.getElementById("tab-badge-truth");
       if (alertCount > 0) {
-        badgeTruth.textContent = alertCount + " 项告警";
+        badgeTruth.textContent = t("badge_truth_alerts", { n: alertCount });
         badgeTruth.className = "tab-count alert";
       } else {
-        badgeTruth.textContent = "健康";
+        badgeTruth.textContent = t("badge_truth_healthy");
         badgeTruth.className = "tab-count";
       }
       renderStormChips(cfg.suppressed_spawners || []);
@@ -3616,10 +3628,13 @@ const dashboardHTML = `<!doctype html>
         return true;
       });
 
-      document.getElementById("managed-summary").textContent = " · 共 " + list.length + " 个受管 · 显示 " + filtered.length + " 个";
+      const isEn = currentLang === "en-US";
+      document.getElementById("managed-summary").textContent = isEn
+        ? (" · " + list.length + " managed · showing " + filtered.length)
+        : (" · 共 " + list.length + " 个受管 · 显示 " + filtered.length + " 个");
       const rowsEl = document.getElementById("proc-custom-rows");
       if (filtered.length === 0) {
-        rowsEl.innerHTML = '<div style="padding:18px;text-align:center;color:var(--muted)">当前筛选条件下无受管后台进程（全屏免打扰、调度关闭或尚未出现久置进程）</div>';
+        rowsEl.innerHTML = '<div style="padding:18px;text-align:center;color:var(--muted)">' + (isEn ? 'No managed background processes under current filter' : '当前筛选条件下无受管后台进程（全屏免打扰、调度关闭或尚未出现久置进程）') + '</div>';
         return;
       }
 
@@ -3631,17 +3646,17 @@ const dashboardHTML = `<!doctype html>
           : (p.memory_priority === "Low" ? '<span class="pill pill-slate" style="padding:1px 6px;font-size:11px">Low</span>' : "");
         const ecoPill = p.eco_qos ? '<span class="pill pill-green" style="padding:1px 6px;font-size:11px">EcoQoS</span>' : "";
         const cpuPill = p.below_normal_cpu ? '<span class="pill pill-amber" style="padding:1px 6px;font-size:11px">BelowNormal</span>' : "";
-        const stormPill = p.storm_throttled ? '<span class="pill pill-red" style="padding:1px 6px;font-size:11px">' + SVG.zap + '<span>风暴压制中</span></span>' : "";
-        const adaptPill = p.adaptive_cooldown ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">防反扑自校准</span>' : "";
+        const stormPill = p.storm_throttled ? '<span class="pill pill-red" style="padding:1px 6px;font-size:11px">' + SVG.zap + '<span>' + (isEn ? 'Storm Throttled' : '风暴压制中') + '</span></span>' : "";
+        const adaptPill = p.adaptive_cooldown ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">' + (isEn ? 'Anti-Rebound' : '防反扑自校准') + '</span>' : "";
         const barPct = Math.max(4, Math.min(100, ((p.working_set_mb || 0) * 100) / maxWS)).toFixed(1);
         const lowName = String(p.name || "").toLowerCase();
         const escapedName = esc(p.name).replace(/'/g, "\\'");
         const wlBtn = inWL[lowName]
-          ? '<span class="pill pill-green" style="padding:1px 6px;font-size:11px">白名单中</span>'
-          : '<button class="btn-sm" style="padding:2px 6px;font-size:11px;color:#047857;border-color:#a7f3d0;background:#ecfdf5" onclick="addWhitelistName(\'' + escapedName + '\')">+ 白名单</button>';
+          ? '<span class="pill pill-green" style="padding:1px 6px;font-size:11px">' + (isEn ? 'Whitelisted' : '白名单中') + '</span>'
+          : '<button class="btn-sm" style="padding:2px 6px;font-size:11px;color:#047857;border-color:#a7f3d0;background:#ecfdf5" onclick="addWhitelistName(\'' + escapedName + '\')">' + (isEn ? '+ Whitelist' : '+ 白名单') + '</button>';
         const addBtn = inRoster[lowName]
-          ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">自动名单内</span>'
-          : '<button class="btn-sm" style="padding:2px 6px;font-size:11px" onclick="addStormName(\'' + escapedName + '\')">+ 压制</button>';
+          ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">' + (isEn ? 'In Roster' : '自动名单内') + '</span>'
+          : '<button class="btn-sm" style="padding:2px 6px;font-size:11px" onclick="addStormName(\'' + escapedName + '\')">' + (isEn ? '+ Suppress' : '+ 压制') + '</button>';
         const iconSrc = procIconURL(p.pid, p.name);
 
         return [
@@ -3651,13 +3666,13 @@ const dashboardHTML = `<!doctype html>
           '    <div class="proc-name-line">',
           '      <span class="proc-name" title="' + esc(p.name) + '">' + esc(p.name) + '</span>',
           '      <span class="proc-pid">PID ' + p.pid + '</span>',
-          '      <span class="card-sub">已托管 ' + p.managed_seconds + 's</span>',
+          '      <span class="card-sub">' + (isEn ? 'Managed ' : '已托管 ') + p.managed_seconds + 's</span>',
           '    </div>',
           '    <div class="proc-tags">' + stormPill + adaptPill + prioPill + ecoPill + cpuPill + '</div>',
           '  </div>',
           '  <div class="proc-metrics">',
-          '    <div class="proc-mem-txt">' + fmtMB(p.working_set_mb) + ' 工作集</div>',
-          '    <div class="proc-mem-sub">私有提交 ' + fmtMB(p.private_mb) + '</div>',
+          '    <div class="proc-mem-txt">' + fmtMB(p.working_set_mb) + (isEn ? ' WS' : ' 工作集') + '</div>',
+          '    <div class="proc-mem-sub">' + (isEn ? 'Private ' : '私有提交 ') + fmtMB(p.private_mb) + '</div>',
           '    <div class="proc-bar-bg"><div class="proc-bar-fg" style="width:' + barPct + '%"></div></div>',
           '  </div>',
           '  <div style="display:flex;gap:4px;align-items:center">' + wlBtn + addBtn + '</div>',
@@ -3667,20 +3682,21 @@ const dashboardHTML = `<!doctype html>
     }
 
     function renderJournal(list) {
+      const isEn = currentLang === "en-US";
       const rowsEl = document.getElementById("journal-rows");
       if (!list || list.length === 0) {
-        rowsEl.innerHTML = '<div style="padding:18px;text-align:center;color:var(--muted)">暂无调度日志记录（MEMORA 保持克制待命中）</div>';
+        rowsEl.innerHTML = '<div style="padding:18px;text-align:center;color:var(--muted)">' + (isEn ? 'No dispatch logs yet (MEMORA is holding restraint)' : '暂无调度日志记录（MEMORA 保持克制待命中）') + '</div>';
         return;
       }
       rowsEl.innerHTML = list.map(j => {
         const t = j.time ? new Date(j.time).toLocaleTimeString() : "";
-        const targets = (j.targets || []).slice(0, 4).map(x => esc(x.name) + "(" + Math.round(x.working_set_mb) + "MB)").join("、");
-        const rec = j.reclaimed_mb ? (" · 释放 " + fmtMB(j.reclaimed_mb)) : "";
+        const targets = (j.targets || []).slice(0, 4).map(x => esc(x.name) + "(" + Math.round(x.working_set_mb) + "MB)").join(isEn ? ", " : "、");
+        const rec = j.reclaimed_mb ? ((isEn ? " · Freed " : " · 释放 ") + fmtMB(j.reclaimed_mb)) : "";
         return [
           '<div class="j-item">',
           '  <div class="j-top"><span>' + esc(j.action || j.kind) + rec + '</span><span>' + t + '</span></div>',
           '  <div class="j-reason">' + esc(j.reason) + '</div>',
-          targets ? ('  <div class="j-targets">目标: ' + targets + '</div>') : '',
+          targets ? ('  <div class="j-targets">' + (isEn ? 'Targets: ' : '目标: ') + targets + '</div>') : '',
           '</div>'
         ].join("");
       }).join("");
