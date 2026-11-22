@@ -1893,9 +1893,16 @@ const dashboardHTML = `<!doctype html>
 
                 <div class="sub-card spot-surface spot-sm" style="flex:1;min-height:170px;">
                   <div class="sub-card-hdr" style="padding:7px 10px;">
-                    <span id="spawner-card-title-text" style="font-weight:700;font-size:13px">高频子进程派生源（近 5 分钟）</span>
-                    <span class="card-sub" id="spawner-card-sub-text">点击「+ 名单」可永久加入自动压制</span>
+                    <div>
+                      <span id="spawner-card-title-text" style="font-weight:700;font-size:13px">高频子进程派生源（近 5 分钟）</span>
+                      <span class="card-sub" id="spawner-card-sub-text" style="margin-left:6px">点击「+ 名单」可永久加入自动压制</span>
+                    </div>
+                    <button class="btn-sm" id="btn-burst-spawners" onclick="doBurstSpawners()">
+                      <svg class="ico ico-xs" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                      <span id="btn-burst-spawners-txt">脉冲抓捕短命源</span>
+                    </button>
                   </div>
+                  <div id="burst-spawners-bar" style="display:none;padding:6px 10px;border-bottom:1px solid #eef2f7;background:#fafcff;font-size:11.5px;line-height:1.5"></div>
                   <div class="cursor-list" id="spawner-table-wrap" style="flex:1;min-height:0;overflow-y:auto;padding:0 6px;">
                     <div class="list-hover-cursor"></div>
                     <table>
@@ -2166,6 +2173,7 @@ const dashboardHTML = `<!doctype html>
         btn_add_storm: "+ 加入名单",
         spawner_card_title: "高频子进程派生源（近 5 分钟）",
         spawner_card_sub: "点击「+ 名单」可永久加入自动压制",
+        btn_burst_capture: "脉冲抓捕短命源",
         th_pid: "PID",
         th_host_proc: "宿主进程",
         th_spawn_count: "派生次数",
@@ -2314,6 +2322,7 @@ const dashboardHTML = `<!doctype html>
         btn_add_storm: "+ Add to List",
         spawner_card_title: "High-Frequency Spawners (Last 5 mins)",
         spawner_card_sub: "Click '+ List' to permanently add to suppression list",
+        btn_burst_capture: "Burst Capture (2.5s)",
         th_pid: "PID",
         th_host_proc: "Host Process",
         th_spawn_count: "Spawns",
@@ -2466,8 +2475,9 @@ const dashboardHTML = `<!doctype html>
       const inpStorm = document.getElementById("inp-storm-name");
       if (inpStorm) inpStorm.placeholder = t("inp_storm_ph");
       setTxt("btn-add-storm-btn", t("btn_add_storm"));
-      setTxt("spawner-card-title-text", t("spawner-card-title-text"));
+      setTxt("spawner-card-title-text", t("spawner_card_title"));
       setTxt("spawner-card-sub-text", t("spawner_card_sub"));
+      setTxt("btn-burst-spawners-txt", t("btn_burst_capture"));
 
       const thSpawners = document.getElementById("th-row-spawners");
       if (thSpawners) {
@@ -3280,12 +3290,13 @@ const dashboardHTML = `<!doctype html>
 
       const adaptCnt = (a.adaptive_cooldown_procs || []).length;
       const adaptNote = adaptCnt > 0 ? (isEn ? (" · Anti-rebound active for " + hlNum(adaptCnt + " procs", "hl-violet", "adapt-cnt")) : (" · 已防反扑自校准 " + hlNum(adaptCnt + " 项", "hl-violet", "adapt-cnt"))) : "";
-      
+      const leakBackoffNote = a.kernel_leak_backoff ? (isEn ? (" · " + hlNum("Leak Anti-Thrash Backoff", "hl-amber", "lk-bo")) : (" · " + hlNum("内核泄漏防抖退避", "hl-amber", "lk-bo"))) : "";
+
       setTweenHTML("desc-smart", !isGuard
         ? (isEn ? "Smart dispatch disabled (all managed procs restored to default OS priority, passive observation only)" : "智能调度已关闭（已恢复全部受管进程默认优先级，当前仅保持采样分析）")
         : (act.smart_memory_schedule
-          ? (isEn ? ("Smart dispatch active (Current " + hlNum(translateSmartLabel(a.smart_label), "hl-emerald", "tier-lbl") + "), cumulative dynamic savings: " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote)
-                  : ("智能调度运行中（当前 " + hlNum(a.smart_label || "一级 · 轻度巡航", "hl-emerald", "tier-lbl") + "），累计动态调节 " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote))
+          ? (isEn ? ("Smart dispatch active (Current " + hlNum(translateSmartLabel(a.smart_label), "hl-emerald", "tier-lbl") + "), cumulative dynamic savings: " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote + leakBackoffNote)
+                  : ("智能调度运行中（当前 " + hlNum(a.smart_label || "一级 · 轻度巡航", "hl-emerald", "tier-lbl") + "），累计动态调节 " + hlNum(fmtMB(lg.dynamic_reclaimed_mb || 0), "hl-blue", "dyn-mb") + adaptNote + leakBackoffNote))
           : (isEn ? "Smart dispatch switch disabled" : "智能调度开关已关闭")));
 
       setTweenHTML("desc-eco", !isGuard
@@ -3322,7 +3333,7 @@ const dashboardHTML = `<!doctype html>
                   : ("贴边真相光尺运行中（" + sideLabel + " · 高度 " + hlNum(Math.round((ew.y_percent || 0.22) * 100) + "%", "hl-blue", "edge-y") + "）；悬停展开 CPU/GPU 温度与深释圆环，支持全屏自由拖拽与松手自动贴边"))));
 
       // Tab 2: Truth cards, storm chips, spawner table
-      const alertCount = renderDiagCards(deep, bd, a, s.is_admin);
+      const alertCount = renderDiagCards(deep, bd, a, s.is_admin, s.leak_forecast || {});
       const badgeTruth = document.getElementById("tab-badge-truth");
       if (alertCount > 0) {
         badgeTruth.textContent = t("badge_truth_alerts", { n: alertCount });
@@ -3332,6 +3343,7 @@ const dashboardHTML = `<!doctype html>
         badgeTruth.className = "tab-count";
       }
       renderStormChips(cfg.suppressed_spawners || []);
+      renderBurstSpawners(a.burst_spawners || []);
       renderSpawners(a.top_spawners || [], cfg.suppressed_spawners || []);
 
       // Tab 3: Custom-drawn managed processes + journal
@@ -3362,12 +3374,14 @@ const dashboardHTML = `<!doctype html>
       syncTabSlider();
     }
 
-    function renderDiagCards(deep, bd, a, isAdmin) {
+    function renderDiagCards(deep, bd, a, isAdmin, forecast) {
       const box = document.getElementById("diag-cards");
       const cards = [];
       let alertCount = 0;
+      const isEn = currentLang === "en-US";
       const leak = deep.kernel_leak || {};
       const extras = deep.extras || {};
+      const fc = forecast || {};
 
       if (leak.suspected || bd.zombie_leak_bytes > 512 * 1048576 || (deep.handle_leakers || []).length > 0) {
         alertCount++;
@@ -3383,13 +3397,14 @@ const dashboardHTML = `<!doctype html>
         });
         const findings = allTags.slice(0, 6)
           .map(t => {
-            const actNote = (t.active || 0) >= 10000 ? (", " + t.active + "对象") : "";
+            const actNote = (t.active || 0) >= 10000 ? (", " + t.active + (isEn ? " objs" : "对象")) : "";
             const drvNote = (t.drivers && t.drivers.length) ? (" → " + esc(t.drivers.join(","))) : "";
             return esc(t.tag) + "(" + fmtBytes(t.bytes) + actNote + drvNote + ")";
           })
-          .join("；");
+          .join(isEn ? "; " : "；");
 
-        const hasDualHuorong = allTags.some(t => {
+        const hasLenovoConflict = !!(deep.has_lenovo_conflict_drv);
+        const hasDualHuorong = hasLenovoConflict && allTags.some(t => {
           const drvs = (t.drivers || []).map(d => String(d).toLowerCase());
           const hasLnv = drvs.some(d => d.indexOf("lnvscenter") >= 0 || d.indexOf("lrtp") >= 0 || d.indexOf("netrtp") >= 0);
           const hasSysdiag = drvs.some(d => d.indexOf("sysdiag") >= 0);
@@ -3401,46 +3416,126 @@ const dashboardHTML = `<!doctype html>
         const svcChips = (deep.conflict_services || [])
           .filter(s => s && s.exists)
           .map(s => {
-            const st = s.running ? "运行中" : ("已停止(" + esc(s.start_type || "--") + ")");
+            const st = s.running
+              ? (isEn ? "Running" : "运行中")
+              : ((isEn ? "Stopped(" : "已停止(") + esc(s.start_type || "--") + ")");
             return "<code>" + esc(s.name) + ": " + st + "</code>";
           })
           .join(" ");
 
         const leakers = deep.handle_leakers || [];
-        const leakerStr = leakers.map(g => esc(g.name) + " (" + (g.handles || 0) + " 句柄)").join("、");
+        const leakerStr = leakers.map(g => esc(g.name) + " (" + (g.handles || 0) + (isEn ? " handles)" : " 句柄)")).join(isEn ? ", " : "、");
+
+        // Find any resettable high-handle service leaker (e.g. ESurfingSvr >= 5000 handles)
+        const resettableSvcs = [];
+        leakers.forEach(g => {
+          const low = String(g.name || "").toLowerCase();
+          if (low === "esurfingsvr.exe" && (g.handles || 0) >= 5000) {
+            resettableSvcs.push({ svc: "ESurfingSvr", label: "ESurfingSvr (" + g.handles + (isEn ? " handles)" : " 句柄)") });
+          } else if (low === "lenovosmartservice.exe" && (g.handles || 0) >= 3000) {
+            resettableSvcs.push({ svc: "LenovoSmartService", label: "LenovoSmartService" });
+          }
+        });
+
         const extraDiag = [];
-        if (pendingReboot) {
-          extraDiag.push("<b>冲突驱动自启已永久关闭 (Start=4)</b>：因本机已连续运行多日未重启，本次开机初期驻留的内核钩子仍锁死约 <b>" + fmtBytes(bd.zombie_leak_bytes) + "</b> 历史进程对象与 PFN 物理页；<b>择机重启一次电脑即可彻底释放这 " + fmtBytes(bd.zombie_leak_bytes) + " 内存并永久停用该驱动</b>；");
-        } else if (hasDualHuorong && mitigated) {
-          extraDiag.push("<b>冲突驱动已阻断</b>：联想冲突驱动与宿主服务当前处于停止/禁用状态；下方高占用的历史内核 <code>EPROCESS</code> / 对象残留形成于阻断之前，用户态无法抹除，将在下次电脑重启后清零；");
-        } else if (hasDualHuorong) {
-          extraDiag.push("<b>内核过滤驱动冲突 (cckT / 安全钩子)</b>：检测到联想内置安全驱动 (<code>lnvscenter.sys</code>) 与独立火绒驱动 (<code>sysdiag.sys</code>) 共存，极易在 Ring 0 导致进程退出引用计数未归零；");
+
+        // Bleed rate & exhaustion ETA forecast banner (Item 4)
+        if (fc.active && fc.proc_obj_rate_per_hour > 0) {
+          const objRate = Math.round(fc.proc_obj_rate_per_hour);
+          const mbRate = Math.round(fc.leak_mb_per_hour || 0);
+          let etaTxt = "";
+          if (fc.already_critical) {
+            etaTxt = isEn
+              ? "<b>Already past 90% saturation — reboot recommended</b>"
+              : "<b>已跌破 90% 挤兑线，建议择机重启清零</b>";
+          } else if (fc.eta_hours > 0) {
+            etaTxt = isEn
+              ? ("Est. <b>~" + fc.eta_hours.toFixed(1) + "h</b> until 90% saturation")
+              : ("预计约 <b>" + fc.eta_hours.toFixed(1) + " 小时</b>后触及 90% 挤兑线");
+          }
+          const fcLine = isEn
+            ? ("<b>Ring-0 Bleed Forecast</b>: <code>+" + objRate + " objs/hr</code> (≈ <code>+" + mbRate + " MB/hr</code>)" + (etaTxt ? (" · " + etaTxt) : ""))
+            : ("<b>内核失血速率预警</b>：<code>+" + objRate + " 对象/时</code>（实测 ≈ <code>+" + mbRate + " MB/时</code>）" + (etaTxt ? (" · " + etaTxt) : ""));
+          extraDiag.push('<div style="margin:4px 0;padding:5px 8px;border-radius:7px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.22);color:#991b1b">' + fcLine + '</div>');
         }
+
+        if (pendingReboot) {
+          extraDiag.push(isEn
+            ? ("<b>Conflict Driver Disabled (Start=4)</b>: Legacy kernel hooks from earlier boot still lock ~<b>" + fmtBytes(bd.zombie_leak_bytes) + "</b>. <b>Reboot once to fully reclaim this memory</b>;")
+            : ("<b>冲突驱动自启已永久关闭 (Start=4)</b>：因本机已连续运行多日未重启，本次开机初期驻留的内核钩子仍锁死约 <b>" + fmtBytes(bd.zombie_leak_bytes) + "</b> 历史进程对象与 PFN 物理页；<b>择机重启一次电脑即可彻底释放这 " + fmtBytes(bd.zombie_leak_bytes) + " 内存并永久停用该驱动</b>；"));
+        } else if (hasDualHuorong && mitigated) {
+          extraDiag.push(isEn
+            ? "<b>Conflict Driver Mitigated</b>: Lenovo conflict drivers are stopped/disabled; remaining historical <code>EPROCESS</code> objects will clear on next reboot;"
+            : "<b>冲突驱动已阻断</b>：联想冲突驱动与宿主服务当前处于停止/禁用状态；下方高占用的历史内核 <code>EPROCESS</code> / 对象残留形成于阻断之前，用户态无法抹除，将在下次电脑重启后清零；");
+        } else if (hasDualHuorong) {
+          extraDiag.push(isEn
+            ? "<b>Kernel Filter Conflict (cckT)</b>: Coexistence of <code>lnvscenter.sys</code> and <code>sysdiag.sys</code> detected, prone to Ring-0 reference leaks;"
+            : "<b>内核过滤驱动冲突 (cckT / 安全钩子)</b>：检测到联想内置安全驱动 (<code>lnvscenter.sys</code>) 与独立火绒驱动 (<code>sysdiag.sys</code>) 共存，极易在 Ring 0 导致进程退出引用计数未归零；");
+        }
+
+        // Dynamic PE Import Table Process-Hook Driver Audit (Item 2)
+        const hookDrvs = (deep.hook_drivers || []).filter(d => d && d.risk_level !== "low");
+        if (hookDrvs.length > 0) {
+          const rows = hookDrvs.slice(0, 5).map(hd => {
+            const rPill = hd.risk_level === "high"
+              ? '<span class="pill pill-red" style="padding:0 5px;font-size:10px">' + (isEn ? 'HIGH' : '高危') + '</span>'
+              : '<span class="pill pill-amber" style="padding:0 5px;font-size:10px">' + (isEn ? 'MED' : '中危') + '</span>';
+            const ver = hd.file_version ? (" v" + esc(hd.file_version)) : "";
+            const comp = hd.company ? (" · " + esc(hd.company)) : "";
+            const poolInfo = hd.pool_tag
+              ? (" · " + (isEn ? "Pool " : "关联池 ") + "<code>" + esc(hd.pool_tag) + "</code>(" + fmtBytes(hd.pool_bytes) + (hd.pool_active >= 1000 ? (", " + hd.pool_active + (isEn ? " objs" : "对象")) : "") + ")")
+              : "";
+            const hooksShort = (hd.hooks || []).map(h => h.replace("PsSetCreateProcessNotifyRoutine", "CreateProcNotify").replace("PsLookupProcessByProcessId", "LookupProcByPID").replace("PsSetCreateThreadNotifyRoutine", "CreateThreadNotify")).join(", ");
+            return '<div style="margin-top:3px">' + rPill + ' <code>' + esc(hd.name) + '</code>' + ver + comp + ' [' + esc(hooksShort) + ']' + poolInfo + '</div>';
+          }).join("");
+          const hdrTxt = isEn
+            ? ("<b>Ring-0 PE Driver Audit (Active Non-Microsoft Process Hooks)</b>" + (!hasLenovoConflict ? " — Lenovo drivers absent; inspect these active kernel hooks:" : ":"))
+            : ("<b>本机第三方进程钩子驱动审计 (Ring 0 PE 导入表)</b>" + (!hasLenovoConflict ? "（联想冲突驱动已不存在，请重点二分排查以下仍在运行的进程钩子驱动）：" : "："));
+          extraDiag.push('<div style="margin:4px 0;padding:6px 8px;border-radius:7px;background:rgba(15,23,42,0.035);border:1px solid #e2e8f0">' + hdrTxt + rows + '</div>');
+        }
+
         if (svcChips) {
-          extraDiag.push("<b>实时服务/驱动状态</b>：" + svcChips);
+          extraDiag.push("<b>" + (isEn ? "Live Service/Driver State" : "实时服务/驱动状态") + "</b>：" + svcChips);
         }
         if (leakerStr) {
-          extraDiag.push("<b>高句柄泄漏宿主</b>：" + leakerStr + "（单进程句柄数已超异常基线）；");
+          extraDiag.push("<b>" + (isEn ? "High-Handle Leak Host" : "高句柄泄漏宿主") + "</b>：" + leakerStr + (isEn ? " (exceeds abnormal handle baseline);" : "（单进程句柄数已超异常基线）；"));
         }
         if (findings) {
-          extraDiag.push("本机高占用内核池标签: " + findings);
+          extraDiag.push((isEn ? "Top Kernel Pool Tags: " : "本机高占用内核池标签: ") + findings);
         }
-        const privTip = (isAdmin === false) ? "（若需提权将自动请求 UAC）" : "";
-        let fixBtn = "";
-        if (mitigated) {
-          fixBtn = '<button class="btn-sm" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>再次校验并巩固冲突防护</span></button>';
-        } else if (hasDualHuorong || leak.suspected) {
-          fixBtn = '<button class="btn-sm btn-danger" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>一键阻断冲突驱动并重置宿主服务</span></button>';
-        } else {
-          fixBtn = '<button class="btn-sm btn-danger" onclick="doSuppressStorms()">' + SVG.zap + '<span>立即压制高句柄泄漏宿主</span></button>';
+
+        const privTip = (isAdmin === false) ? (isEn ? " (UAC prompt if elevation needed)" : "（若需提权将自动请求 UAC）") : "";
+        const actionBtns = [];
+        if (hasLenovoConflict) {
+          if (mitigated) {
+            actionBtns.push('<button class="btn-sm" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>' + (isEn ? 'Re-Verify Conflict Mitigation' : '再次校验并巩固冲突防护') + '</span></button>');
+          } else {
+            actionBtns.push('<button class="btn-sm btn-danger" id="btn-fix-kernel-leak" onclick="doFixKernelLeak()">' + SVG.wrench + '<span>' + (isEn ? 'Block Conflict Drivers & Reset Hosts' : '一键阻断冲突驱动并重置宿主服务') + '</span></button>');
+          }
         }
+        resettableSvcs.forEach(item => {
+          actionBtns.push('<button class="btn-sm btn-danger" onclick="doResetLeaker(\'' + esc(item.svc) + '\')">' + SVG.wrench + '<span>' + (isEn ? ('Reset Service: ' + esc(item.label)) : ('单点重置高句柄服务: ' + esc(item.label))) + '</span></button>');
+        });
+        if (!hasLenovoConflict && resettableSvcs.length === 0 && leakers.length > 0) {
+          actionBtns.push('<button class="btn-sm btn-danger" onclick="doSuppressStorms()">' + SVG.zap + '<span>' + (isEn ? 'Throttle High-Handle Hosts' : '立即压制高句柄泄漏宿主') + '</span></button>');
+        }
+        actionBtns.push('<button class="btn-sm" onclick="doDeepScan()">' + SVG.search + '<span>' + (isEn ? 'Rescan Drivers (.sys)' : '重新扫描本机驱动 (.sys)') + '</span></button>');
 
         const boxCls = mitigated ? "alert-amber" : "alert-red";
         const pillCls = mitigated ? "pill-amber" : "pill-red";
-        const titleTxt = mitigated ? "根因 1：冲突源头已阻断 · 历史内核残留待重启清零" : "根因 1：内核对象 / 句柄泄漏归因";
+        const titleTxt = mitigated
+          ? (isEn ? "Root Cause 1: Conflict Mitigated · Historical Residues Pending Reboot" : "根因 1：冲突源头已阻断 · 历史内核残留待重启清零")
+          : (isEn ? "Root Cause 1: Kernel Object / Handle Pool Leak Attribution" : "根因 1：内核对象 / 句柄泄漏归因");
+        const procLine = isEn
+          ? ("    Alive kernel Process objects: <b>" + (leak.process_objects || 0) + "</b> vs active processes: <b>" + (leak.active_processes || a.process_count || 0) + "</b> (Direct pool: <b>" + fmtBytes(leak.related_pool_bytes) + "</b>; Alloc/Free: <b>" + (leak.proc_tag_allocs || 0) + " / " + (leak.proc_tag_frees || 0) + "</b>).")
+          : ("    内核存活 Process 对象 <b>" + (leak.process_objects || 0) + "</b> 个 vs 真实活跃进程 <b>" + (leak.active_processes || a.process_count || 0) + "</b> 个（直连内核池 <b>" + fmtBytes(leak.related_pool_bytes) + "</b>；Proc 分配/释放 <b>" + (leak.proc_tag_allocs || 0) + " / " + (leak.proc_tag_frees || 0) + "</b>）。");
         const descLine = mitigated
-          ? "    已开启开机自动静默压制；当前残留的 <b>" + (leak.process_objects || 0) + "</b> 个内核 Process 对象会在下次重启后释放。"
-          : "    当第三方驱动过滤钩子在 Ring 0 未正确释放引用计数或后台进程疯狂泄漏句柄时，已退出的 EPROCESS / 内核池无法被用户态强行抹除，需阻断源头并择机重启清理" + privTip + "。";
+          ? (isEn
+              ? ("    Boot protection is active; remaining <b>" + (leak.process_objects || 0) + "</b> zombie Process objects will clear after next reboot.")
+              : ("    已开启开机自动静默压制；当前残留的 <b>" + (leak.process_objects || 0) + "</b> 个内核 Process 对象会在下次重启后释放。"))
+          : (isEn
+              ? ("    When Ring-0 driver hooks omit <code>ObDereferenceObject</code> on process exit, zombie <code>EPROCESS</code> structures and page tables cannot be freed from user mode — isolate the leaking driver above and reboot" + privTip + ".")
+              : ("    当第三方驱动过滤钩子在 Ring 0 未正确释放引用计数或后台进程疯狂泄漏句柄时，已退出的 EPROCESS 与物理页表无法被用户态强行抹除，需排查上方高危进程钩子驱动并择机重启清理" + privTip + "。"));
 
         cards.push([
           '<div class="alert-box spot-surface spot-sm ' + boxCls + '">',
@@ -3449,13 +3544,12 @@ const dashboardHTML = `<!doctype html>
           '    <span class="pill ' + pillCls + '">' + fmtBytes(bd.zombie_leak_bytes) + '</span>',
           '  </div>',
           '  <div class="alert-body">',
-          '    内核存活 Process 对象 <b>' + (leak.process_objects || 0) + '</b> 个 vs 真实活跃进程 <b>' + (leak.active_processes || a.process_count || 0) + '</b> 个（直连内核池 <b>' + fmtBytes(leak.related_pool_bytes) + '</b>）。<br/>',
+          procLine + '<br/>',
           descLine + '<br/>',
           extraDiag.join("<br/>"),
           '  </div>',
           '  <div class="alert-actions">',
-          '    ' + fixBtn,
-          '    <button class="btn-sm" onclick="doDeepScan()">' + SVG.search + '<span>重新扫描本机驱动 (.sys)</span></button>',
+          actionBtns.join(""),
           '  </div>',
           '</div>'
         ].join(""));
@@ -3467,15 +3561,17 @@ const dashboardHTML = `<!doctype html>
         cards.push([
           '<div class="alert-box spot-surface spot-sm alert-violet">',
           '  <div class="alert-title">',
-          '    <span class="alert-title-l">' + SVG.box + '<span>虚拟化 / WSL2 容器物理锁页 (Vid)</span></span>',
+          '    <span class="alert-title-l">' + SVG.box + '<span>' + (isEn ? 'Virtualization / WSL2 Locked Physical Pages (Vid)' : '虚拟化 / WSL2 容器物理锁页 (Vid)') + '</span></span>',
           '    <span class="pill pill-violet">' + fmtBytes(vBytes) + '</span>',
           '  </div>',
           '  <div class="alert-body">',
-          '    <code>vmmemWSL</code> 当前在物理内存中硬性锁定 <b>' + fmtBytes(vBytes) + '</b>。若当前未使用 Linux 子系统或 Docker 容器，点击下方按钮可<b>免重启</b>立即归还全部虚机内存。',
+          isEn
+            ? ('    <code>vmmemWSL</code> currently locks <b>' + fmtBytes(vBytes) + '</b> in physical RAM. Reclaim Linux caches or shut down WSL2 below without rebooting.')
+            : ('    <code>vmmemWSL</code> 当前在物理内存中硬性锁定 <b>' + fmtBytes(vBytes) + '</b>。若当前未使用 Linux 子系统或 Docker 容器，点击下方按钮可<b>免重启</b>立即归还全部虚机内存。'),
           '  </div>',
           '  <div class="alert-actions">',
-          '    <button class="btn-sm" onclick="doWSLReclaim()">' + SVG.zap + '<span>温和释放 Linux 页缓存 (不停容器)</span></button>',
-          '    <button class="btn-sm btn-violet" onclick="doWSLShutdown()">' + SVG.zap + '<span>关闭 WSL2 归还全部锁页</span></button>',
+          '    <button class="btn-sm" onclick="doWSLReclaim()">' + SVG.zap + '<span>' + (isEn ? 'Drop Linux Page Cache (Keep Containers)' : '温和释放 Linux 页缓存 (不停容器)') + '</span></button>',
+          '    <button class="btn-sm btn-violet" onclick="doWSLShutdown()">' + SVG.zap + '<span>' + (isEn ? 'Shutdown WSL2 & Reclaim All' : '关闭 WSL2 归还全部锁页') + '</span></button>',
           '  </div>',
           '</div>'
         ].join(""));
@@ -3489,18 +3585,20 @@ const dashboardHTML = `<!doctype html>
         if (isHighMulti) alertCount++;
         const topClusters = multiClusters.slice(0, 4)
           .map(g => '<span class="mini-proc-cell">' + miniProcIconHTML(0, g.name) + '<b>' + esc(g.name) + '</b></span>×' + g.count + " (" + fmtBytes(g.private_ws_bytes) + ")")
-          .join("、");
+          .join(isEn ? ", " : "、");
         cards.push([
           '<div class="alert-box spot-surface spot-sm ' + (isHighMulti ? 'alert-amber' : '') + '" style="' + (isHighMulti ? '' : 'border-color:#bfdbfe;background:#f8fafc') + '">',
           '  <div class="alert-title">',
-          '    <span class="alert-title-l">' + SVG.box + '<span>多进程簇驻留分析（浏览器 / Electron / WebView2）</span></span>',
+          '    <span class="alert-title-l">' + SVG.box + '<span>' + (isEn ? 'Multi-Process Cluster Footprint (Browser / Electron / WebView2)' : '多进程簇驻留分析（浏览器 / Electron / WebView2）') + '</span></span>',
           '    <span class="pill ' + (isHighMulti ? 'pill-amber' : 'pill-blue') + '">' + fmtBytes(multiTotal) + '</span>',
           '  </div>',
           '  <div class="alert-body">',
-          '    检测到本机共有 <b>' + multiClusters.length + '</b> 类多进程应用簇共占据 <b>' + fmtBytes(multiTotal) + '</b> 独占物理工作集：<br/>' + topClusters + '。<br/>MEMORA 会主动避让正在操作的前沿标签页/IDE，仅对后台长期闲置分片施加温和压缩。',
+          isEn
+            ? ('    Detected <b>' + multiClusters.length + '</b> multi-process clusters occupying <b>' + fmtBytes(multiTotal) + '</b> exclusive physical working set:<br/>' + topClusters + '.<br/>MEMORA shields active foreground tabs/IDEs and gently trims only long-idle background shards.')
+            : ('    检测到本机共有 <b>' + multiClusters.length + '</b> 类多进程应用簇共占据 <b>' + fmtBytes(multiTotal) + '</b> 独占物理工作集：<br/>' + topClusters + '。<br/>MEMORA 会主动避让正在操作的前沿标签页/IDE，仅对后台长期闲置分片施加温和压缩。'),
           '  </div>',
           '  <div class="alert-actions">',
-          '    <button class="btn-sm" onclick="doOptimize()">' + SVG.zap + '<span>立即收敛闲置后台分片</span></button>',
+          '    <button class="btn-sm" onclick="doOptimize()">' + SVG.zap + '<span>' + (isEn ? 'Trim Idle Background Shards Now' : '立即收敛闲置后台分片') + '</span></button>',
           '  </div>',
           '</div>'
         ].join(""));
@@ -3512,16 +3610,17 @@ const dashboardHTML = `<!doctype html>
         alertCount++;
         const topCommit = (deep.proc_groups || []).slice(0, 3)
           .map(g => esc(g.name) + " (" + fmtBytes(g.private_bytes) + ")")
-          .join("、");
+          .join(isEn ? ", " : "、");
         cards.push([
           '<div class="alert-box spot-surface spot-sm alert-amber">',
           '  <div class="alert-title">',
-          '    <span class="alert-title-l">' + SVG.alert + '<span>虚拟内存提交额度 (Commit Limit) 逼近上限</span></span>',
+          '    <span class="alert-title-l">' + SVG.alert + '<span>' + (isEn ? 'Virtual Memory Commit Limit Approaching Ceiling' : '虚拟内存提交额度 (Commit Limit) 逼近上限') + '</span></span>',
           '    <span class="pill pill-amber">' + (commitRatio * 100).toFixed(0) + '%</span>',
           '  </div>',
           '  <div class="alert-body">',
-          '    系统已提交虚拟内存 <b>' + fmtBytes(a.commit_bytes) + '</b> / 上限 <b>' + fmtBytes(a.total_commit_bytes) + '</b>。当 Commit 接近 100% 时，即便仍有可用物理内存，大型游戏或创作软件也可能直接触发 OOM 崩溃。<br/>' +
-          (topCommit ? ('最高私有提交应用：' + topCommit + '（建议开启或扩大系统托管页面文件）。') : '建议关闭闲置大型应用或调大 Windows 页面文件上限。'),
+          isEn
+            ? ('    Committed memory is <b>' + fmtBytes(a.commit_bytes) + '</b> / <b>' + fmtBytes(a.total_commit_bytes) + '</b>. Approaching 100% can trigger OOM crashes in games or IDEs even with free physical RAM.<br/>' + (topCommit ? ('Top private commit: ' + topCommit + '.') : 'Consider closing idle heavy apps or expanding system pagefile.'))
+            : ('    系统已提交虚拟内存 <b>' + fmtBytes(a.commit_bytes) + '</b> / 上限 <b>' + fmtBytes(a.total_commit_bytes) + '</b>。当 Commit 接近 100% 时，即便仍有可用物理内存，大型游戏或创作软件也可能直接触发 OOM 崩溃。<br/>' + (topCommit ? ('最高私有提交应用：' + topCommit + '（建议开启或扩大系统托管页面文件）。') : '建议关闭闲置大型应用或调大 Windows 页面文件上限。')),
           '  </div>',
           '</div>'
         ].join(""));
@@ -3530,13 +3629,13 @@ const dashboardHTML = `<!doctype html>
       const nodes = extras.numa_nodes || [];
       if (nodes.length > 0) {
         const tight = nodes.find(n => n.available_mb < 512);
-        const listStr = nodes.map(n => "Node" + esc(n.id) + ": 可用 " + n.available_mb + "/" + n.total_mb + " MB").join(" | ");
+        const listStr = nodes.map(n => "Node" + esc(n.id) + (isEn ? ": Avail " : ": 可用 ") + n.available_mb + "/" + n.total_mb + " MB").join(" | ");
         if (tight) {
           alertCount++;
           cards.push([
             '<div class="alert-box spot-surface spot-sm alert-amber">',
-            '  <div class="alert-title"><span class="alert-title-l">' + SVG.scale + '<span>NUMA 节点内存失衡预警</span></span><span class="pill pill-amber">Node' + esc(tight.id) + ' 吃紧</span></div>',
-            '  <div class="alert-body">' + listStr + '。单节点物理页已见底，建议点击左侧「立即深度释压」。</div>',
+            '  <div class="alert-title"><span class="alert-title-l">' + SVG.scale + '<span>' + (isEn ? 'NUMA Node Memory Imbalance Alert' : 'NUMA 节点内存失衡预警') + '</span></span><span class="pill pill-amber">Node' + esc(tight.id) + (isEn ? ' Tight' : ' 吃紧') + '</span></div>',
+            '  <div class="alert-body">' + listStr + (isEn ? '. Physical pages on one NUMA node are nearly exhausted — click "Deep Pressure Relief Now" on the left.' : '。单节点物理页已见底，建议点击左侧「立即深度释压」。') + '</div>',
             '</div>'
           ].join(""));
         }
@@ -3545,8 +3644,8 @@ const dashboardHTML = `<!doctype html>
       if (cards.length === 0) {
         cards.push([
           '<div class="alert-box spot-surface spot-sm" style="border-color:#a7f3d0;background:#ecfdf5">',
-          '  <div class="alert-title"><span class="alert-title-l">' + SVG.check + '<span>内核对象、虚机锁页与提交水位均健康</span></span><span class="pill pill-green">全机健康</span></div>',
-          '  <div class="alert-body">当前未检测到僵尸内核对象、异常驱动泄漏或虚拟内存提交过载。MEMORA 正在后台以完全自适应的方式守卫本机空载基线，并实时追踪高频子进程派生与闲置多进程膨胀。</div>',
+          '  <div class="alert-title"><span class="alert-title-l">' + SVG.check + '<span>' + (isEn ? 'Kernel Objects, VM Locks & Commit Headroom Healthy' : '内核对象、虚机锁页与提交水位均健康') + '</span></span><span class="pill pill-green">' + (isEn ? 'Healthy' : '全机健康') + '</span></div>',
+          '  <div class="alert-body">' + (isEn ? 'No zombie kernel objects, abnormal driver leaks, or commit saturation detected. MEMORA is quietly protecting your idle baseline while tracking spawn storms and background bloat.' : '当前未检测到僵尸内核对象、异常驱动泄漏或虚拟内存提交过载。MEMORA 正在后台以完全自适应的方式守卫本机空载基线，并实时追踪高频子进程派生与闲置多进程膨胀。') + '</div>',
           '</div>'
         ].join(""));
       }
@@ -3556,14 +3655,37 @@ const dashboardHTML = `<!doctype html>
 
     function renderStormChips(list) {
       const box = document.getElementById("storm-chips");
+      const isEn = currentLang === "en-US";
       if (!list || list.length === 0) {
-        box.innerHTML = '<span class="card-sub">当前压制名单为空（开启自动学习后将自动捕获并加入）</span>';
+        box.innerHTML = '<span class="card-sub">' + (isEn ? 'Suppression list is empty (auto-learn adds repeat storm hosts automatically)' : '当前压制名单为空（开启自动学习后将自动捕获并加入）') + '</span>';
         return;
       }
       box.innerHTML = list.map(name =>
         '<span class="chip">' + esc(name) +
-        '<button class="chip-x" title="移出压制名单" onclick="removeStormName(\'' + esc(name).replace(/'/g, "\\'") + '\')">×</button></span>'
+        '<button class="chip-x" title="' + (isEn ? 'Remove from list' : '移出压制名单') + '" onclick="removeStormName(\'' + esc(name).replace(/'/g, "\\'") + '\')">×</button></span>'
       ).join("");
+    }
+
+    function renderBurstSpawners(list) {
+      const bar = document.getElementById("burst-spawners-bar");
+      if (!bar) return;
+      const isEn = currentLang === "en-US";
+      if (!list || list.length === 0) {
+        bar.style.display = "none";
+        return;
+      }
+      bar.style.display = "block";
+      const hdr = isEn
+        ? '<b style="color:#1d4ed8">Burst Capture (Short-Lived &lt;100ms Spawns):</b> '
+        : '<b style="color:#1d4ed8">短命脉冲抓捕（&lt;100ms 瞬逝子进程）:</b> ';
+      const items = list.slice(0, 4).map(b => {
+        const rate = Math.round(b.est_rate_per_hour || 0);
+        const leakStr = (b.est_leak_mb_per_hour >= 10)
+          ? (' <span class="pill pill-red" style="padding:0 5px;font-size:10px">≈+' + Math.round(b.est_leak_mb_per_hour) + ' MB/' + (isEn ? 'h' : '时') + '</span>')
+          : "";
+        return '<code>' + esc(b.parent_name || "?") + '(' + (b.parent_pid || 0) + ') → ' + esc(b.child_name) + '</code> ×' + b.captured_count + ' (~' + rate + '/' + (isEn ? 'h' : '时') + ')' + leakStr;
+      }).join(" · ");
+      bar.innerHTML = hdr + items;
     }
 
     function procIconURL(pid, name) {
@@ -3577,22 +3699,23 @@ const dashboardHTML = `<!doctype html>
 
     function renderSpawners(list, stormList) {
       const tb = document.getElementById("tbl-spawners");
+      const isEn = currentLang === "en-US";
       const inRoster = {};
       (stormList || []).forEach(n => { inRoster[String(n).toLowerCase()] = true; });
       if (!list || list.length === 0) {
-        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">近 5 分钟暂无高频子进程派生宿主</td></tr>';
+        tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">' + (isEn ? 'No high-frequency spawners observed in the last 5 mins' : '近 5 分钟暂无高频子进程派生宿主') + '</td></tr>';
         return;
       }
       tb.innerHTML = list.map(sp => {
         const lowName = String(sp.name || "").toLowerCase();
         const badge = sp.throttled
-          ? '<span class="pill pill-red">已压制</span>'
-          : '<span class="pill pill-slate">正常观测</span>';
+          ? '<span class="pill pill-red">' + (isEn ? 'Suppressed' : '已压制') + '</span>'
+          : '<span class="pill pill-slate">' + (isEn ? 'Observing' : '正常观测') + '</span>';
         const opBtn = inRoster[lowName]
-          ? '<span class="card-sub">已在名单</span>'
-          : '<button class="btn-sm" style="padding:2px 7px;font-size:11px" onclick="addStormName(\'' + esc(sp.name).replace(/'/g, "\\'") + '\')">+ 名单</button>';
+          ? '<span class="card-sub">' + (isEn ? 'In List' : '已在名单') + '</span>'
+          : '<button class="btn-sm" style="padding:2px 7px;font-size:11px" onclick="addStormName(\'' + esc(sp.name).replace(/'/g, "\\'") + '\')">' + (isEn ? '+ List' : '+ 名单') + '</button>';
         const ico = miniProcIconHTML(sp.pid, sp.name);
-        return '<tr class="hover-row"><td>' + sp.pid + '</td><td><span class="mini-proc-cell">' + ico + '<b>' + esc(sp.name || "已退出") + '</b></span></td><td class="num">' + sp.child_count + ' 次</td><td>' + badge + '</td><td class="num">' + opBtn + '</td></tr>';
+        return '<tr class="hover-row"><td>' + sp.pid + '</td><td><span class="mini-proc-cell">' + ico + '<b>' + esc(sp.name || (isEn ? "Exited" : "已退出")) + '</b></span></td><td class="num">' + sp.child_count + (isEn ? '' : ' 次') + '</td><td>' + badge + '</td><td class="num">' + opBtn + '</td></tr>';
       }).join("");
     }
 
@@ -3989,6 +4112,44 @@ const dashboardHTML = `<!doctype html>
       } finally {
         const b2 = document.getElementById("btn-fix-kernel-leak");
         if (b2) b2.disabled = false;
+      }
+    }
+
+    async function doBurstSpawners() {
+      const isEn = currentLang === "en-US";
+      const btn = document.getElementById("btn-burst-spawners");
+      const txt = document.getElementById("btn-burst-spawners-txt");
+      if (btn) btn.disabled = true;
+      if (txt) txt.textContent = isEn ? "Capturing (2.5s)..." : "高频抓捕中 (2.5s)...";
+      try {
+        const data = await api("/api/burst-spawners", "POST", {});
+        if (data.state) renderState(data.state);
+        const list = data.burst_spawners || [];
+        if (list.length > 0) {
+          const top = list[0];
+          showToast(isEn
+            ? ("Captured " + list.length + " short-lived spawn source(s): top " + (top.parent_name || "?") + " -> " + top.child_name + " (~" + Math.round(top.est_rate_per_hour || 0) + "/hr)")
+            : ("脉冲抓捕完成：发现 " + list.length + " 组短命子进程源，首位 " + (top.parent_name || "?") + " → " + top.child_name + "（折算约 " + Math.round(top.est_rate_per_hour || 0) + " 次/时）"), 6000);
+        } else {
+          showToast(isEn ? "Burst capture finished: no short-lived child spawns detected in 2.5s" : "脉冲抓捕完成：2.5 秒窗口内未捕获到短命子进程派生", 4000);
+        }
+      } catch (e) {
+        showToast((isEn ? "Burst capture failed: " : "脉冲抓捕失败: ") + e.message, 5000);
+      } finally {
+        if (btn) btn.disabled = false;
+        if (txt) txt.textContent = t("btn_burst_capture");
+      }
+    }
+
+    async function doResetLeaker(svc) {
+      const isEn = currentLang === "en-US";
+      showToast(isEn ? ("Resetting high-handle service " + svc + "...") : ("正在安全重置高句柄服务 " + svc + "（若弹出 UAC 请允许）..."), 4500);
+      try {
+        const data = await api("/api/reset-leaker", "POST", { service: svc });
+        if (data.state) renderState(data.state);
+        showToast(data.output || (isEn ? ("Service " + svc + " reset completed") : ("服务 " + svc + " 重置完成")), 6500);
+      } catch (e) {
+        showToast((isEn ? "Service reset failed: " : "服务重置失败: ") + e.message, 5500);
       }
     }
 

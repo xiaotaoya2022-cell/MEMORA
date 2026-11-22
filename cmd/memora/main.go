@@ -152,6 +152,8 @@ func cmdStatus(args []string) {
 			"family_protected":          len(family),
 			"top_nonpaged_tags":         diag.TopNonPagedTags,
 			"top_paged_tags":            diag.TopPagedTags,
+			"hook_drivers":              diag.HookDrivers,
+			"leak_forecast":             engine.ComputeLeakForecast(snap, diag.Leak),
 			"top_process_groups":        diag.ProcGroups[:groupLimit],
 			"memora_pid":                os.Getpid(),
 			"memora_working_set":        selfWS,
@@ -294,6 +296,28 @@ func printKernelStatus(diag engine.DeepDiagnosis, deep bool) {
 			}
 			fmt.Printf("  %-4s  %9s  活跃 %-8d  (分配 %d / 释放 %d)%s\n",
 				t.Tag, human(t.Bytes), t.Active, t.Allocs, t.Frees, formatTagNote(t))
+		}
+	}
+	if len(diag.HookDrivers) > 0 && (deep || diag.Leak.Suspected) {
+		fmt.Printf("第三方进程钩子驱动审计 (Ring 0 PE 导入表)\n")
+		for _, hd := range diag.HookDrivers {
+			if hd.RiskLevel == "low" && !deep {
+				continue
+			}
+			extra := ""
+			if hd.PoolTag != "" {
+				extra = fmt.Sprintf("  [关联池 %s: %s, %d 对象]", hd.PoolTag, human(hd.PoolBytes), hd.PoolActive)
+			}
+			comp := hd.Company
+			if comp == "" {
+				comp = "未知厂商"
+			}
+			ver := ""
+			if hd.FileVer != "" {
+				ver = " v" + hd.FileVer
+			}
+			fmt.Printf("  [%-6s] %-22s  %s%s  (%s)%s\n",
+				strings.ToUpper(hd.RiskLevel), hd.Name, comp, ver, strings.Join(hd.Hooks, ", "), extra)
 		}
 	}
 }
@@ -536,8 +560,8 @@ func printDoctorSpawns(first, last engine.DeepDiagnosis, spawnByParent map[strin
 		return
 	}
 	fmt.Printf("\n进程创建与内核对象回收\n")
+	rate := 0.0
 	if last.HasPoolTags {
-		rate := 0.0
 		if elapsedMin > 0 {
 			rate = float64(dAllocs) / elapsedMin
 		}
@@ -562,6 +586,27 @@ func printDoctorSpawns(first, last engine.DeepDiagnosis, spawnByParent map[strin
 			top = append(top, fmt.Sprintf("%s (+%d)", item.name, item.count))
 		}
 		fmt.Printf("  采样捕获频繁拉起子进程的宿主: %s\n", strings.Join(top, "、"))
+	}
+	if rate >= 30 || dObjs >= 20 {
+		leakKB := 0.0
+		if dFrees == 0 && dAllocs >= 10 {
+			leakKB = 150.0
+		}
+		burst := proc.CaptureBurstSpawners(context.Background(), 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+		if len(burst) > 0 {
+			fmt.Printf("  短命子进程脉冲抓捕 (2.5s @ 30ms):\n")
+			for i, b := range burst {
+				if i >= 5 {
+					break
+				}
+				leakNote := ""
+				if b.EstLeakMBPerHour >= 10 {
+					leakNote = fmt.Sprintf("  [按当前泄漏率折算 ≈ +%.0f MB/时]", b.EstLeakMBPerHour)
+				}
+				fmt.Printf("    %s(%d) -> %s  捕获 %d 次 (折算 %.0f 次/时)%s\n",
+					b.ParentName, b.ParentPID, b.ChildName, b.CapturedCount, b.EstRatePerHour, leakNote)
+			}
+		}
 	}
 }
 

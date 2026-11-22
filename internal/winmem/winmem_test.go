@@ -92,3 +92,22 @@ func TestMatchPoolTagsToDrivers(t *testing.T) {
 		t.Fatalf("expected no hits for None, got %+v", hits["None"])
 	}
 }
+
+func TestClassifyHookDriver(t *testing.T) {
+	cat, risk := classifyHookDriver("sysdiag.sys", "Beijing Huorong Network Technology Co., Ltd.", []string{"PsSetCreateProcessNotifyRoutine", "PsLookupProcessByProcessId"})
+	if cat != "security_hook" || risk != "high" {
+		t.Fatalf("sysdiag.sys = (%s, %s), want (security_hook, high)", cat, risk)
+	}
+	cat, risk = classifyHookDriver("VBoxSup.sys", "Oracle and/or its affiliates", []string{"PsSetCreateProcessNotifyRoutine", "ObRegisterCallbacks"})
+	if cat != "vm_hook" || risk != "high" {
+		t.Fatalf("VBoxSup.sys = (%s, %s), want (vm_hook, high)", cat, risk)
+	}
+	cat, risk = classifyHookDriver("nfwfp.sys", "Windows (R) Win 7 DDK provider", []string{"PsLookupProcessByProcessId"})
+	if cat != "wfp_hook" || risk != "medium" {
+		t.Fatalf("nfwfp.sys = (%s, %s), want (wfp_hook, medium)", cat, risk)
+	}
+	cat, risk = classifyHookDriver("nvlddmkm.sys", "NVIDIA Corporation", []string{"PsSetCreateProcessNotifyRoutine"})
+	if cat != "gpu_driver" || risk != "low" {
+		t.Fatalf("nvlddmkm.sys = (%s, %s), want (gpu_driver, low)", cat, risk)
+	}
+}

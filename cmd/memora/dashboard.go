@@ -80,10 +80,12 @@ type assessmentDTO struct {
 	SoftManaged     int                    `json:"soft_managed"`
 	SmartTier             int                    `json:"smart_tier"`
 	SmartLabel            string                 `json:"smart_label"`
-	SpawnRatePerMin       float64                `json:"spawn_rate_per_min"`
-	TopSpawners           []engine.SpawnerStat   `json:"top_spawners"`
-	Orphans               []engine.OrphanProcess `json:"orphans"`
-	AdaptiveCooldownProcs []string               `json:"adaptive_cooldown_procs,omitempty"`
+	SpawnRatePerMin       float64                 `json:"spawn_rate_per_min"`
+	TopSpawners           []engine.SpawnerStat    `json:"top_spawners"`
+	BurstSpawners         []proc.BurstSpawnerStat `json:"burst_spawners,omitempty"`
+	Orphans               []engine.OrphanProcess  `json:"orphans"`
+	AdaptiveCooldownProcs []string                `json:"adaptive_cooldown_procs,omitempty"`
+	KernelLeakBackoff     bool                    `json:"kernel_leak_backoff,omitempty"`
 }
 
 type bloatCulpritDTO struct {
@@ -121,6 +123,7 @@ type dashboardState struct {
 	Assessment         assessmentDTO               `json:"assessment"`
 	Breakdown          engine.MemoryBreakdown      `json:"breakdown"`
 	Deep               engine.DeepDiagnosis        `json:"deep"`
+	LeakForecast       engine.LeakForecast         `json:"leak_forecast"`
 	ManagedProcesses   []engine.ManagedProcessInfo `json:"managed_processes"`
 	RecentJournal      []journal.Entry             `json:"recent_journal"`
 	Ledger             ledgerDTO                   `json:"ledger"`
@@ -162,6 +165,12 @@ type dashboardServer struct {
 	lastCulpritsAt time.Time
 	lastClientAt   time.Time
 	history        []historyPoint
+
+	optMu          sync.Mutex
+	optInFlight    bool
+	lastOptAt      time.Time
+	lastOptExtreme bool
+	lastOptRes     engine.OptimizeResult
 }
 
 func (d *dashboardServer) isClientActiveLocked() bool {
@@ -214,6 +223,8 @@ func newDashboardServer(
 	mux.HandleFunc("/api/wsl-shutdown", d.withAuth(d.handleWSLShutdown))
 	mux.HandleFunc("/api/wsl-reclaim", d.withAuth(d.handleWSLReclaim))
 	mux.HandleFunc("/api/fix-kernel-leak", d.withAuth(d.handleFixKernelLeak))
+	mux.HandleFunc("/api/burst-spawners", d.withAuth(d.handleBurstSpawners))
+	mux.HandleFunc("/api/reset-leaker", d.withAuth(d.handleResetLeaker))
 
 	d.server = &http.Server{
 		Handler:           mux,
@@ -297,6 +308,7 @@ func (d *dashboardServer) UpdateFromEngine(eng *engine.Engine, a engine.Assessme
 	if shouldDeep {
 		deep = engine.InspectDeep(a.Snap, procs, matchDrivers)
 		bd = eng.ComputeAdaptiveBreakdown(a.Snap, a.PrivateWS, procs, deep)
+		eng.SetKernelLeakState(deep.Leak.Suspected, bd.ZombieLeakBytes)
 	}
 
 	var culprits []bloatCulpritDTO
@@ -411,6 +423,7 @@ func (d *dashboardServer) snapshotState() dashboardState {
 		Assessment:       toAssessmentDTO(d.latest),
 		Breakdown:        d.breakdown,
 		Deep:             deepCopy,
+		LeakForecast:     engine.ComputeLeakForecast(d.latest.Snap, deepCopy.Leak),
 		ManagedProcesses: d.managed,
 		RecentJournal:    d.recentJ,
 		Ledger: ledgerDTO{
@@ -465,8 +478,10 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		SmartLabel:            a.SmartLabel,
 		SpawnRatePerMin:       a.SpawnRatePerMin,
 		TopSpawners:           a.TopSpawners,
+		BurstSpawners:         a.BurstSpawners,
 		Orphans:               a.Orphans,
 		AdaptiveCooldownProcs: a.AdaptiveCooldownProcs,
+		KernelLeakBackoff:     a.KernelLeakBackoff,
 	}
 }
 
@@ -702,6 +717,25 @@ func (d *dashboardServer) handleOptimize(w http.ResponseWriter, r *http.Request)
 	}
 	extreme := req.Extreme || strings.EqualFold(strings.TrimSpace(req.Mode), "extreme") || strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("mode")), "extreme")
 
+	d.optMu.Lock()
+	if d.optInFlight || (!d.lastOptAt.IsZero() && time.Since(d.lastOptAt) < 3*time.Second && d.lastOptExtreme == extreme) {
+		cached := d.lastOptRes
+		d.optMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deduped": true,
+			"result":  cached,
+			"state":   d.snapshotState(),
+		})
+		return
+	}
+	d.optInFlight = true
+	d.optMu.Unlock()
+	defer func() {
+		d.optMu.Lock()
+		d.optInFlight = false
+		d.optMu.Unlock()
+	}()
+
 	var res engine.OptimizeResult
 	var opErr error
 	err := d.runOnEngine(func(eng *engine.Engine) {
@@ -734,10 +768,130 @@ func (d *dashboardServer) handleOptimize(w http.ResponseWriter, r *http.Request)
 		}
 		cancel()
 	}
+	d.optMu.Lock()
+	d.lastOptAt = time.Now()
+	d.lastOptExtreme = extreme
+	d.lastOptRes = res
+	d.optMu.Unlock()
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"result": res,
 		"state":  d.snapshotState(),
 	})
+}
+
+func (d *dashboardServer) handleBurstSpawners(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	d.mu.RLock()
+	leakSuspected := d.deep.Leak.Suspected
+	d.mu.RUnlock()
+	leakKB := 0.0
+	if leakSuspected {
+		leakKB = 150.0
+	}
+
+	var captured []proc.BurstSpawnerStat
+	if d.runOnEngine != nil {
+		// Capture off the engine loop so we don't block 10s ticks, then publish onto latest state.
+		captured = proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+		d.mu.Lock()
+		d.latest.BurstSpawners = append([]proc.BurstSpawnerStat(nil), captured...)
+		d.mu.Unlock()
+	} else {
+		captured = proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"burst_spawners": captured,
+		"state":          d.snapshotState(),
+	})
+}
+
+func (d *dashboardServer) handleResetLeaker(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Service string `json:"service"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	svc, ok := allowedLeakerService(req.Service)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported service target"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	out, cmdErr := resetLeakerService(ctx, svc, !winmem.IsAdmin())
+	_, _, _ = d.refreshSnapshotNow(false)
+
+	res := map[string]any{
+		"ok":      cmdErr == nil,
+		"service": svc,
+		"output":  strings.TrimSpace(out),
+		"state":   d.snapshotState(),
+	}
+	if cmdErr != nil {
+		res["error"] = cmdErr.Error()
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func allowedLeakerService(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "esurfingsvr", "esurfingsvr.exe":
+		return "ESurfingSvr", true
+	case "lenovosmartservice", "lenovosmartservice.exe":
+		return "LenovoSmartService", true
+	case "lenovoutilityservice", "lenovoutilityservice.exe":
+		return "LenovoUtilityService", true
+	default:
+		return "", false
+	}
+}
+
+func resetLeakerService(ctx context.Context, svc string, elevateIfNeeded bool) (string, error) {
+	restart := strings.EqualFold(svc, "ESurfingSvr")
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Continue'
+$svc = '%s'
+$restart = $%t
+$q = & sc.exe query $svc 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Output "服务 $svc 不存在或未安装"
+  exit 0
+}
+& sc.exe stop $svc *> $null
+$stopped = $false
+for ($i = 0; $i -lt 25; $i++) {
+  Start-Sleep -Milliseconds 200
+  $st = (& sc.exe query $svc 2>$null) -join ' '
+  if ($st -match 'STOPPED') { $stopped = $true; break }
+}
+if (-not $stopped) {
+  Get-Process -Name $svc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 400
+}
+if ($restart) {
+  & sc.exe start $svc *> $null
+  Write-Output "已安全重启高句柄泄漏服务 $svc，句柄计数已归零"
+} else {
+  & sc.exe config $svc start= demand *> $null
+  Write-Output "已停止服务 $svc 并保持按需启动(demand)"
+}
+`, svc, restart)
+	out, err := runHiddenPowerShell(ctx, script, elevateIfNeeded)
+	return string(out), err
 }
 
 func (d *dashboardServer) handleRestore(w http.ResponseWriter, r *http.Request) {

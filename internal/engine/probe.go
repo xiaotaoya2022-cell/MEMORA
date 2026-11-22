@@ -83,6 +83,26 @@ type ProbeRecord struct {
 	Extra            map[string]any `json:"extra,omitempty"`
 }
 
+// LeakForecast estimates ongoing Ring-0 zombie object bleed rate and how many
+// hours remain before physical memory approaches critical saturation (90% used).
+type LeakForecast struct {
+	Active             bool    `json:"active"`
+	ProcObjRatePerHour float64 `json:"proc_obj_rate_per_hour"`
+	LeakMBPerHour      float64 `json:"leak_mb_per_hour"`
+	BytesPerZombieKB   float64 `json:"bytes_per_zombie_kb,omitempty"`
+	AvailMB            float64 `json:"avail_mb"`
+	ETAHours           float64 `json:"eta_hours"` // hours until avail < 10% total RAM (0 if > 72h or already < 10%)
+	AlreadyCritical    bool    `json:"already_critical"`
+	SampleHours        float64 `json:"sample_hours"`
+	Urgent             bool    `json:"urgent"` // true when AlreadyCritical or (ETAHours > 0 && ETAHours <= 12)
+}
+
+type trendPoint struct {
+	At         time.Time
+	ProcObjs   uint32
+	InUseBytes uint64
+}
+
 var (
 	probeMu           sync.Mutex
 	lastProbeSample   *Sample
@@ -90,6 +110,8 @@ var (
 	lastHourlyProbeAt time.Time
 	lastHourlyObjs    uint32
 	lastSelfActionAt  time.Time
+	trendLoaded       bool
+	trendHistory      []trendPoint
 )
 
 var trackedConflictServices = []string{
@@ -267,6 +289,7 @@ func ObserveProbeSample(s Sample) {
 			ProcObjDelta:     delta,
 			ProcObjRatePerHr: rate,
 		})
+		recordTrendPointLocked(cur.At, cur.ProcessObjects, cur.InUseBytes)
 		lastHourlyProbeAt = s.At
 		lastHourlyObjs = cur.ProcessObjects
 		lastProbeMetrics = &cur
@@ -277,11 +300,7 @@ func ObserveProbeSample(s Sample) {
 	} else {
 		// Refresh cheap metrics every tick so external_boost always has fresh Before stats.
 		pm := CaptureProbeMetrics(s, false)
-		pm.ProcessObjects = lastProbeMetrics.ProcessObjects
-		pm.ProcessHandles = lastProbeMetrics.ProcessHandles
-		pm.RelatedPoolBytes = lastProbeMetrics.RelatedPoolBytes
-		pm.CckTActive = lastProbeMetrics.CckTActive
-		pm.CckTBytes = lastProbeMetrics.CckTBytes
+		inheritKernelProbeMetrics(&pm, lastProbeMetrics)
 		lastProbeMetrics = &pm
 	}
 
@@ -290,14 +309,169 @@ func ObserveProbeSample(s Sample) {
 	lastProbeSample = &copySample
 }
 
-// RecordProbeEvent writes an explicit action probe (memora_optimize / conflict_mitigation).
+func inheritKernelProbeMetrics(dst, src *ProbeMetrics) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.ProcessObjects == 0 && src.ProcessObjects > 0 {
+		dst.ProcessObjects = src.ProcessObjects
+		dst.ProcessHandles = src.ProcessHandles
+		dst.TokenObjects = src.TokenObjects
+		dst.EventObjects = src.EventObjects
+		dst.ProcTagAllocs = src.ProcTagAllocs
+		dst.ProcTagFrees = src.ProcTagFrees
+		dst.ProcTagBytes = src.ProcTagBytes
+		dst.RelatedPoolBytes = src.RelatedPoolBytes
+		dst.CckTActive = src.CckTActive
+		dst.CckTBytes = src.CckTBytes
+	}
+}
+
+func recordTrendPointLocked(at time.Time, procObjs uint32, inUse uint64) {
+	if procObjs == 0 {
+		return
+	}
+	// Detect reboot: if ProcessObjects dropped by >50%, reset current-boot trend window.
+	if n := len(trendHistory); n > 0 && procObjs*2 < trendHistory[n-1].ProcObjs {
+		trendHistory = trendHistory[:0]
+	}
+	trendHistory = append(trendHistory, trendPoint{
+		At:         at,
+		ProcObjs:   procObjs,
+		InUseBytes: inUse,
+	})
+	if len(trendHistory) > 36 {
+		trendHistory = trendHistory[len(trendHistory)-36:]
+	}
+}
+
+func ensureTrendLoadedLocked() {
+	if trendLoaded {
+		return
+	}
+	trendLoaded = true
+	recs := LoadTelemetryProbes(80)
+	for _, r := range recs {
+		if r.After == nil || r.After.ProcessObjects == 0 {
+			continue
+		}
+		if r.Kind != "hourly_trend" && r.Kind != "external_boost" && r.Kind != "conflict_mitigation" {
+			continue
+		}
+		recordTrendPointLocked(r.After.At, r.After.ProcessObjects, r.After.InUseBytes)
+	}
+}
+
+// RecordProbeEvent writes an explicit action probe (memora_optimize / conflict_mitigation / leaker_reset).
+// If Before/After omitted expensive kernel pool scans (ProcessObjects==0), it inherits
+// the latest cached kernel object counters so telemetry logs stay continuous.
 func RecordProbeEvent(rec ProbeRecord) {
 	probeMu.Lock()
 	defer probeMu.Unlock()
 	if rec.At.IsZero() {
 		rec.At = time.Now()
 	}
+	if lastProbeMetrics != nil {
+		inheritKernelProbeMetrics(rec.Before, lastProbeMetrics)
+		inheritKernelProbeMetrics(rec.After, lastProbeMetrics)
+	}
+	if rec.After != nil && rec.After.ProcessObjects > 0 {
+		recordTrendPointLocked(rec.After.At, rec.After.ProcessObjects, rec.After.InUseBytes)
+	}
 	appendProbeRecordLocked(rec)
+}
+
+// ComputeLeakForecast returns the estimated Ring-0 object/memory bleed rate and
+// exhaustion ETA based on current-boot hourly probe history and the live reading.
+func ComputeLeakForecast(snap winmem.Snapshot, leak KernelLeakSummary) LeakForecast {
+	probeMu.Lock()
+	ensureTrendLoadedLocked()
+	pts := make([]trendPoint, len(trendHistory))
+	copy(pts, trendHistory)
+	probeMu.Unlock()
+
+	if leak.ProcessObjects > 0 {
+		nowPt := trendPoint{At: time.Now(), ProcObjs: leak.ProcessObjects, InUseBytes: snap.InUse()}
+		if len(pts) > 0 && nowPt.ProcObjs*2 < pts[len(pts)-1].ProcObjs {
+			pts = nil
+		}
+		pts = append(pts, nowPt)
+	}
+	return computeLeakForecastFromPoints(snap, leak, pts)
+}
+
+func computeLeakForecastFromPoints(snap winmem.Snapshot, leak KernelLeakSummary, pts []trendPoint) LeakForecast {
+	if !leak.Suspected || len(pts) < 2 || snap.TotalPhys == 0 {
+		return LeakForecast{}
+	}
+	// Focus on the last 12 hours of the current boot session for responsive rate estimation.
+	latest := pts[len(pts)-1]
+	cutoff := latest.At.Add(-12 * time.Hour)
+	startIdx := 0
+	for i := range pts {
+		if !pts[i].At.Before(cutoff) {
+			startIdx = i
+			break
+		}
+	}
+	first := pts[startIdx]
+	hours := latest.At.Sub(first.At).Hours()
+	if hours < 0.25 && startIdx > 0 {
+		first = pts[0]
+		hours = latest.At.Sub(first.At).Hours()
+	}
+	if hours < 0.15 {
+		return LeakForecast{}
+	}
+	deltaObjs := int64(latest.ProcObjs) - int64(first.ProcObjs)
+	if deltaObjs <= 0 {
+		return LeakForecast{}
+	}
+	rateObjsHr := float64(deltaObjs) / hours
+	if rateObjsHr < 100 {
+		return LeakForecast{}
+	}
+
+	// Empirical Ring-0 non-reclaimable footprint per leaked zombie EPROCESS
+	// (EPROCESS + MiP2 + Token + Page Directory/PTE/Kernel stack) is ~140-180 KB.
+	// Use observed InUse slope when positive and plausible (40..320 KB/obj), else fallback to 150 KB/obj.
+	const defaultKBPerObj = 150.0
+	kbPerObj := defaultKBPerObj
+	deltaInUseMB := float64(int64(latest.InUseBytes)-int64(first.InUseBytes)) / (1 << 20)
+	if deltaInUseMB > 0 && hours >= 1.0 {
+		obsKB := (deltaInUseMB * 1024.0) / float64(deltaObjs)
+		if obsKB >= 40 && obsKB <= 320 {
+			kbPerObj = obsKB
+		}
+	}
+	leakMBHr := rateObjsHr * kbPerObj / 1024.0
+	if leakMBHr < 10 {
+		return LeakForecast{}
+	}
+
+	availMB := float64(snap.AvailPhys) / (1 << 20)
+	critFloorMB := float64(snap.TotalPhys) * 0.10 / (1 << 20)
+	fc := LeakForecast{
+		Active:             true,
+		ProcObjRatePerHour: rateObjsHr,
+		LeakMBPerHour:      leakMBHr,
+		BytesPerZombieKB:   kbPerObj,
+		AvailMB:            availMB,
+		SampleHours:        hours,
+	}
+	if availMB <= critFloorMB {
+		fc.AlreadyCritical = true
+		fc.Urgent = true
+	} else {
+		eta := (availMB - critFloorMB) / leakMBHr
+		if eta <= 72 {
+			fc.ETAHours = eta
+			if eta <= 12 {
+				fc.Urgent = true
+			}
+		}
+	}
+	return fc
 }
 
 // LoadTelemetryProbes reads the latest telemetry probe records from disk.

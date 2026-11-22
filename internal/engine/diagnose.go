@@ -75,9 +75,11 @@ type DeepDiagnosis struct {
 	DriversScanned        bool                    `json:"drivers_scanned"`
 	TotalWSBytes          uint64                  `json:"total_ws_bytes,omitempty"`
 	SharedWSBytes         uint64                  `json:"shared_ws_bytes,omitempty"`
-	ConflictServices      []winmem.ServiceState   `json:"conflict_services,omitempty"`
-	ConflictMitigated     bool                    `json:"conflict_mitigated"`
-	ConflictPendingReboot bool                    `json:"conflict_pending_reboot"`
+	ConflictServices      []winmem.ServiceState      `json:"conflict_services,omitempty"`
+	ConflictMitigated     bool                       `json:"conflict_mitigated"`
+	ConflictPendingReboot bool                       `json:"conflict_pending_reboot"`
+	HasLenovoConflictDrv  bool                       `json:"has_lenovo_conflict_drv"`
+	HookDrivers           []winmem.ProcessHookDriver `json:"hook_drivers,omitempty"`
 }
 
 // GroupProcesses aggregates processes by case-insensitive image name, sorted by Private bytes desc.
@@ -212,16 +214,90 @@ func InspectDeep(snap winmem.Snapshot, procs []proc.Info, matchDrivers bool) Dee
 	if d.HasPoolTags {
 		attachDriverMatches(&d, matchDrivers)
 	}
+	if d.Leak.Suspected || matchDrivers {
+		attachProcessHookDrivers(&d, matchDrivers)
+	}
 
 	d.ConflictServices = winmem.ReadServiceStates([]string{
 		"lnvscenter", "lrtp", "netrtp",
 		"LenovoPcManagerService", "LnvSvcFdn", "LenovoSmartService", "LenovoUtilityService",
 		"sysdiag", "ESurfingSvr",
 	})
+	d.HasLenovoConflictDrv = computeHasLenovoConflictDrv(d.ConflictServices)
 	d.ConflictMitigated = computeConflictMitigated(d.ConflictServices)
 	d.ConflictPendingReboot = computeConflictPendingReboot(d.ConflictServices)
 
 	return d
+}
+
+func computeHasLenovoConflictDrv(svcs []winmem.ServiceState) bool {
+	for _, s := range svcs {
+		switch strings.ToLower(s.Name) {
+		case "lnvscenter", "lrtp", "netrtp", "lenovopcmanagerservice", "lnvsvcfdn":
+			if s.Exists {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func attachProcessHookDrivers(d *DeepDiagnosis, forceRefresh bool) {
+	driverCacheMu.Lock()
+	drivers := append([]winmem.DriverModule(nil), cachedDrivers...)
+	driverCacheMu.Unlock()
+	if len(drivers) == 0 {
+		if ds, err := winmem.ListDrivers(); err == nil {
+			drivers = ds
+		}
+	}
+	hooks := winmem.AuditProcessHookDrivers(drivers, forceRefresh)
+	if len(hooks) == 0 {
+		return
+	}
+	// Correlate any pool tag findings (e.g. cckT -> sysdiag.sys) onto matching hook drivers.
+	allTags := make([]PoolFinding, 0, len(d.TopNonPagedTags)+len(d.TopPagedTags))
+	allTags = append(allTags, d.TopNonPagedTags...)
+	allTags = append(allTags, d.TopPagedTags...)
+	for i := range hooks {
+		lowDrv := strings.ToLower(hooks[i].Name)
+		for _, tf := range allTags {
+			for _, matched := range tf.Drivers {
+				if strings.EqualFold(matched, lowDrv) {
+					if tf.Active > hooks[i].PoolActive || (hooks[i].PoolTag == "" && tf.Bytes > hooks[i].PoolBytes) {
+						hooks[i].PoolTag = tf.Tag
+						hooks[i].PoolBytes = tf.Bytes
+						hooks[i].PoolActive = tf.Active
+					}
+				}
+			}
+		}
+	}
+	// Re-sort after pool correlation so drivers with huge active pool tags surface first.
+	sort.Slice(hooks, func(i, j int) bool {
+		rank := func(r string) int {
+			switch r {
+			case "high":
+				return 3
+			case "medium":
+				return 2
+			default:
+				return 1
+			}
+		}
+		ri, rj := rank(hooks[i].RiskLevel), rank(hooks[j].RiskLevel)
+		if ri != rj {
+			return ri > rj
+		}
+		if hooks[i].PoolActive != hooks[j].PoolActive {
+			return hooks[i].PoolActive > hooks[j].PoolActive
+		}
+		if len(hooks[i].Hooks) != len(hooks[j].Hooks) {
+			return len(hooks[i].Hooks) > len(hooks[j].Hooks)
+		}
+		return strings.ToLower(hooks[i].Name) < strings.ToLower(hooks[j].Name)
+	})
+	d.HookDrivers = hooks
 }
 
 func computeConflictPendingReboot(svcs []winmem.ServiceState) bool {

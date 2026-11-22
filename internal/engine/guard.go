@@ -411,6 +411,7 @@ func (e *Engine) maybeRecordExtras(s Sample) {
 	e.lastExtrasAt = s.At
 	deep := InspectDeep(s.Snap, s.Procs, false)
 	bd := ComputeBreakdown(s.Snap, s.PrivateWS, deep)
+	e.SetKernelLeakState(deep.Leak.Suspected, bd.ZombieLeakBytes)
 	leakNote := ""
 	if deep.Leak.Suspected {
 		leakNote = fmt.Sprintf("Process对象 %d 个 vs 活跃 %d 个（相关内核池 %.0f MB）",

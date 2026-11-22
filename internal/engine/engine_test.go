@@ -638,3 +638,58 @@ func TestComputeBreakdownDarkMemoryWithSharedWSAndStormNoPingPong(t *testing.T) 
 		t.Fatalf("expected foreground StormThrottled process 9001 to be restored immediately")
 	}
 }
+
+func TestLeakForecastAndReboundExponentialBackoff(t *testing.T) {
+	now := time.Now()
+	pts := []trendPoint{
+		{At: now.Add(-6 * time.Hour), ProcObjs: 150000, InUseBytes: 24 << 30},
+		{At: now, ProcObjs: 174000, InUseBytes: 28 << 30}, // +4000 objs/h, +682 MB/h
+	}
+	snap := winmem.Snapshot{
+		TotalPhys: 40 << 30,
+		AvailPhys: 10 << 30, // 6 GB above 10% floor (4 GB) -> ETA ~9h
+	}
+	leak := KernelLeakSummary{Suspected: true, ProcessObjects: 174000, ActiveProcesses: 400}
+	fc := computeLeakForecastFromPoints(snap, leak, pts)
+	if !fc.Active || !fc.Urgent {
+		t.Fatalf("expected active urgent forecast, got %+v", fc)
+	}
+	if fc.ProcObjRatePerHour < 3900 || fc.ProcObjRatePerHour > 4100 {
+		t.Fatalf("ProcObjRatePerHour = %.1f, want ~4000", fc.ProcObjRatePerHour)
+	}
+	if fc.ETAHours < 7.0 || fc.ETAHours > 11.0 {
+		t.Fatalf("ETAHours = %.2f, want ~9h", fc.ETAHours)
+	}
+
+	// Verify exponential rebound cooldown tiers.
+	base := 2 * time.Minute
+	if got := computeReboundCooldown(base, 1); got != base {
+		t.Fatalf("rebound=1 cooldown = %v, want %v", got, base)
+	}
+	if got := computeReboundCooldown(base, 5); got != 30*time.Minute {
+		t.Fatalf("rebound=5 cooldown = %v, want 30m", got)
+	}
+	if got := computeReboundCooldown(base, 15); got != 45*time.Minute {
+		t.Fatalf("rebound=15 cooldown = %v, want 45m", got)
+	}
+	if got := computeReboundCooldown(base, 40); got != 60*time.Minute {
+		t.Fatalf("rebound=40 cooldown = %v, want 60m", got)
+	}
+
+	// Verify inheritKernelProbeMetrics fills missing ProcessObjects.
+	src := &ProbeMetrics{ProcessObjects: 193000, CckTActive: 205000, CckTBytes: 39 << 20}
+	dst := &ProbeMetrics{}
+	inheritKernelProbeMetrics(dst, src)
+	if dst.ProcessObjects != 193000 || dst.CckTActive != 205000 {
+		t.Fatalf("inheritKernelProbeMetrics failed: %+v", dst)
+	}
+
+	// Verify computeHasLenovoConflictDrv returns false when only standalone sysdiag/ESurfingSvr exist.
+	if computeHasLenovoConflictDrv([]winmem.ServiceState{
+		{Name: "lnvscenter", Exists: false},
+		{Name: "sysdiag", Exists: true, Running: true},
+		{Name: "ESurfingSvr", Exists: true, Running: true},
+	}) {
+		t.Fatalf("expected HasLenovoConflictDrv=false when Lenovo drivers are absent")
+	}
+}

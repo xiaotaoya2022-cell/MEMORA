@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"memora/internal/config"
@@ -76,8 +77,10 @@ type Assessment struct {
 	SmartLabel            string
 	SpawnRatePerMin       float64
 	TopSpawners           []SpawnerStat
+	BurstSpawners         []proc.BurstSpawnerStat
 	Orphans               []OrphanProcess
 	AdaptiveCooldownProcs []string `json:"adaptive_cooldown_procs,omitempty"`
+	KernelLeakBackoff     bool     `json:"kernel_leak_backoff,omitempty"`
 }
 
 // Plan is what the policy decided to do, and why.
@@ -170,6 +173,14 @@ type Engine struct {
 	seenPIDs         map[uint32]bool
 	spawnEvents      []spawnEvent
 	lastSmartTrim    time.Time
+
+	lastLeakSuspected   bool
+	lastZombieLeakBytes uint64
+
+	burstMu           sync.Mutex
+	burstInFlight     bool
+	lastBurstAt       time.Time
+	lastBurstSpawners []proc.BurstSpawnerStat
 }
 
 // New builds an engine around already-loaded settings.
@@ -344,6 +355,8 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	}
 	a.SoftManaged = len(e.softState)
 	a.AdaptiveCooldownProcs = e.AdaptiveCooldownNames()
+	e.maybeTriggerBurstCapture(a.SpawnRatePerMin, a.FullscreenQuiet)
+	a.BurstSpawners = e.BurstSpawners()
 
 	if e.lg != nil && opts.Act {
 		e.lg.RecordSample(s.At, e.interval(opts), !acted, a.FullscreenQuiet,
@@ -358,6 +371,75 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 		opts.OnSample(a)
 	}
 	return a, nil
+}
+
+// SetKernelLeakState updates the engine's awareness of active Ring-0 zombie leaks so
+// Tier 3 user-space trimming can automatically back off instead of thrashing.
+func (e *Engine) SetKernelLeakState(suspected bool, zombieBytes uint64) {
+	e.lastLeakSuspected = suspected
+	e.lastZombieLeakBytes = zombieBytes
+}
+
+// BurstSpawners returns the latest high-frequency short-lived spawner capture results.
+func (e *Engine) BurstSpawners() []proc.BurstSpawnerStat {
+	e.burstMu.Lock()
+	defer e.burstMu.Unlock()
+	if len(e.lastBurstSpawners) == 0 {
+		return nil
+	}
+	out := make([]proc.BurstSpawnerStat, len(e.lastBurstSpawners))
+	copy(out, e.lastBurstSpawners)
+	return out
+}
+
+// RunBurstSpawnCapture performs an on-demand 2.5s high-frequency Toolhelp32 capture
+// to uncover short-lived (<100ms) child process spawners missed by 5s-10s polling.
+func (e *Engine) RunBurstSpawnCapture(ctx context.Context) []proc.BurstSpawnerStat {
+	leakKB := 0.0
+	if e.lastLeakSuspected {
+		leakKB = 150.0
+	}
+	res := proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+	e.burstMu.Lock()
+	e.lastBurstSpawners = append([]proc.BurstSpawnerStat(nil), res...)
+	e.lastBurstAt = time.Now()
+	e.burstMu.Unlock()
+	return res
+}
+
+func (e *Engine) maybeTriggerBurstCapture(spawnRatePerMin float64, fullscreenQuiet bool) {
+	if fullscreenQuiet {
+		return
+	}
+	if spawnRatePerMin < 30 && !e.lastLeakSuspected {
+		return
+	}
+	e.burstMu.Lock()
+	if e.burstInFlight || (!e.lastBurstAt.IsZero() && time.Since(e.lastBurstAt) < 10*time.Minute) {
+		e.burstMu.Unlock()
+		return
+	}
+	e.burstInFlight = true
+	leakKB := 0.0
+	if e.lastLeakSuspected {
+		leakKB = 150.0
+	}
+	e.burstMu.Unlock()
+
+	go func() {
+		defer func() {
+			e.burstMu.Lock()
+			e.burstInFlight = false
+			e.burstMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		res := proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+		e.burstMu.Lock()
+		e.lastBurstSpawners = res
+		e.lastBurstAt = time.Now()
+		e.burstMu.Unlock()
+	}()
 }
 
 func (e *Engine) collect(opts Options) (Sample, error) {

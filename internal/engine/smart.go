@@ -882,6 +882,34 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 		maxBatch = 12
 	}
 
+	// Kernel-Leak-Aware Throttling: when non-reclaimable Ring-0 zombie leaks consume
+	// >= 25% of total physical RAM, available RAM stays chronically low regardless of
+	// user-space trims. Back off aggressively to stop thrashing small 20-40 MB processes.
+	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 {
+		a.KernelLeakBackoff = true
+		if tier >= 3 {
+			if minWS < 80 {
+				minWS = 80
+			}
+			if idleReq < 3*time.Minute {
+				idleReq = 3 * time.Minute
+			}
+			backoffCD := 6 * time.Minute
+			if e.lastZombieLeakBytes >= (s.Snap.TotalPhys*2)/5 {
+				backoffCD = 10 * time.Minute
+			}
+			if procCooldown < backoffCD {
+				procCooldown = backoffCD
+			}
+			if globalInterval < 2*time.Minute {
+				globalInterval = 2 * time.Minute
+			}
+			if maxBatch > 6 {
+				maxBatch = 6
+			}
+		}
+	}
+
 	if !e.lastSmartTrim.IsZero() && s.At.Sub(e.lastSmartTrim) < globalInterval {
 		return false
 	}
@@ -991,15 +1019,13 @@ func (e *Engine) trimCandidates(
 		if !ok || now.Sub(since) < idleReq {
 			continue
 		}
-		effCooldown := procCooldown
-		if e.isReboundProne(p.Name) {
-			effCooldown = procCooldown * 4
-			if effCooldown < 30*time.Minute {
-				effCooldown = 30 * time.Minute
-			}
+		rebounds := e.reboundCount(p.Name)
+		effCooldown := computeReboundCooldown(procCooldown, rebounds)
+		if rebounds >= 30 && minWSMB >= 60 && p.WorkingSet < 120<<20 {
+			continue
 		}
 		if st, ok := e.softState[p.PID]; ok && st.MemoryPriority == proc.MemoryPriorityVeryLow && minWSMB >= 50 {
-			if e.isReboundProne(p.Name) || now.Sub(e.trimmedPIDs[p.PID]) < 30*time.Minute {
+			if rebounds >= 2 || now.Sub(e.trimmedPIDs[p.PID]) < 30*time.Minute {
 				continue
 			}
 		}
@@ -1325,11 +1351,36 @@ func (e *Engine) evaluateTrimRebounds(s Sample) {
 	}
 }
 
-func (e *Engine) isReboundProne(name string) bool {
+func (e *Engine) reboundCount(name string) int {
 	if len(e.reboundCounts) == 0 || name == "" {
-		return false
+		return 0
 	}
-	return e.reboundCounts[strings.ToLower(strings.TrimSpace(name))] >= 2
+	return e.reboundCounts[strings.ToLower(strings.TrimSpace(name))]
+}
+
+func computeReboundCooldown(base time.Duration, rebounds int) time.Duration {
+	if rebounds < 2 {
+		return base
+	}
+	var mult time.Duration = 4
+	minFloor := 30 * time.Minute
+	switch {
+	case rebounds >= 30:
+		mult = 8
+		minFloor = 60 * time.Minute
+	case rebounds >= 10:
+		mult = 6
+		minFloor = 45 * time.Minute
+	}
+	eff := base * mult
+	if eff < minFloor {
+		eff = minFloor
+	}
+	return eff
+}
+
+func (e *Engine) isReboundProne(name string) bool {
+	return e.reboundCount(name) >= 2
 }
 
 // AdaptiveCooldownNames returns sorted process names that tripped automatic rebound calibration.
