@@ -215,6 +215,33 @@ func TestDashboardAuthAndAPIEndpoints(t *testing.T) {
 	_, _ = toggleCall("mode", true)
 	_, _ = toggleCall("smart_memory_schedule", true)
 
+	// 3b. Language toggle persists into config and is injected server-side in index HTML.
+	langBody, _ := json.Marshal(toggleRequest{Key: "language", Value: "en-US"})
+	reqLang, _ := http.NewRequest(http.MethodPost, base+"/api/toggle", bytes.NewReader(langBody))
+	reqLang.Header.Set("X-Memora-Token", dash.token)
+	reqLang.Header.Set("Content-Type", "application/json")
+	resLang, err := http.DefaultClient.Do(reqLang)
+	if err != nil {
+		t.Fatalf("POST /api/toggle(language): %v", err)
+	}
+	var stLang dashboardState
+	_ = json.NewDecoder(resLang.Body).Decode(&stLang)
+	resLang.Body.Close()
+	if resLang.StatusCode != http.StatusOK || stLang.Config.Language != "en-US" {
+		t.Fatalf("language toggle failed: code=%d lang=%q", resLang.StatusCode, stLang.Config.Language)
+	}
+	resIdx, err := http.Get(base + "/?token=" + dash.token)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	var idxBuf bytes.Buffer
+	_, _ = idxBuf.ReadFrom(resIdx.Body)
+	resIdx.Body.Close()
+	if !bytes.Contains(idxBuf.Bytes(), []byte(`const SERVER_LANG = "en-US";`)) {
+		t.Fatalf("expected server-injected SERVER_LANG=\"en-US\" in index HTML")
+	}
+	_, _ = toggleCall("language", true) // restore zh-CN
+
 	// 4. POST /api/optimize then POST /api/restore.
 	reqOpt, _ := http.NewRequest(http.MethodPost, base+"/api/optimize", bytes.NewReader([]byte("{}")))
 	reqOpt.Header.Set("X-Memora-Token", dash.token)

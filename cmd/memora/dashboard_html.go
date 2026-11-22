@@ -2082,7 +2082,11 @@ const dashboardHTML = `<!doctype html>
     let latestState = null;
     let procFilter = "all";
     let windowMaximized = false;
-    let currentLang = localStorage.getItem("memora_lang") || ((navigator.language && navigator.language.toLowerCase().startsWith("en")) ? "en-US" : "zh-CN");
+    const SERVER_LANG = "__MEMORA_LANG__";
+    let currentLang = (SERVER_LANG === "en-US" || SERVER_LANG === "zh-CN")
+      ? SERVER_LANG
+      : (localStorage.getItem("memora_lang") || ((navigator.language && navigator.language.toLowerCase().startsWith("en")) ? "en-US" : "zh-CN"));
+    let langSyncPendingUntil = 0;
 
     const I18N = {
       "zh-CN": {
@@ -2537,10 +2541,14 @@ const dashboardHTML = `<!doctype html>
 
     function toggleLanguage() {
       currentLang = (currentLang === "zh-CN" ? "en-US" : "zh-CN");
+      langSyncPendingUntil = Date.now() + 3000;
       localStorage.setItem("memora_lang", currentLang);
       applyStaticI18N();
-      api("/api/toggle", "POST", { key: "language", value: currentLang }).catch(() => {});
+      api("/api/toggle", "POST", { key: "language", value: currentLang }).then(s => {
+        if (s && s.assessment) renderState(s);
+      }).catch(() => {});
       if (latestState) {
+        if (latestState.config) latestState.config.language = currentLang;
         renderState(latestState);
       }
       requestAnimationFrame(() => {
@@ -3130,6 +3138,15 @@ const dashboardHTML = `<!doctype html>
       const a = s.assessment;
       const bd = s.breakdown || {};
       const cfg = s.config || {};
+      if (Date.now() > langSyncPendingUntil && (cfg.language === "en-US" || cfg.language === "zh-CN") && cfg.language !== currentLang) {
+        currentLang = cfg.language;
+        localStorage.setItem("memora_lang", currentLang);
+        applyStaticI18N();
+        requestAnimationFrame(() => {
+          syncTabSlider();
+          syncFilterSlider();
+        });
+      }
       const act = cfg.actions || {};
       const thr = cfg.thresholds || {};
       const deep = s.deep || {};

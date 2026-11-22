@@ -510,10 +510,18 @@ func (d *dashboardServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	d.mu.Lock()
 	d.lastClientAt = time.Now()
+	lang := d.cfg.Language
 	d.mu.Unlock()
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en") {
+		lang = "en-US"
+	} else {
+		lang = "zh-CN"
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(strings.Replace(dashboardHTML, "__MEMORA_TOKEN__", d.token, 1)))
+	html := strings.Replace(dashboardHTML, "__MEMORA_TOKEN__", d.token, 1)
+	html = strings.Replace(html, "__MEMORA_LANG__", lang, 1)
+	_, _ = w.Write([]byte(html))
 }
 
 func (d *dashboardServer) handleFavicon(w http.ResponseWriter, r *http.Request) {
