@@ -3529,14 +3529,19 @@ const dashboardHTML = `<!doctype html>
           extraDiag.push('<div style="margin:4px 0;padding:6px 8px;border-radius:7px;background:rgba(15,23,42,0.035);border:1px solid #e2e8f0">' + hdrTxt + rows + forensicNote + '</div>');
         }
 
-        if (svcChips) {
-          extraDiag.push("<b>" + (isEn ? "Live Service/Driver State" : "实时服务/驱动状态") + "</b>：" + svcChips);
-        }
         if (leakerStr) {
           extraDiag.push("<b>" + (isEn ? "High-Handle Leak Host" : "高句柄泄漏宿主") + "</b>：" + leakerStr + (isEn ? " (exceeds abnormal handle baseline);" : "（单进程句柄数已超异常基线）；"));
         }
+        const detailLines = [];
+        if (svcChips) {
+          detailLines.push("<div><b>" + (isEn ? "Live Service/Driver State" : "实时服务/驱动状态") + "</b>：" + svcChips + "</div>");
+        }
         if (findings) {
-          extraDiag.push((isEn ? "Top Kernel Pool Tags: " : "本机高占用内核池标签: ") + findings);
+          detailLines.push('<div style="margin-top:2px"><b>' + (isEn ? "Top Kernel Pool Tags" : "本机高占用内核池标签") + "</b>：" + findings + "</div>");
+        }
+        if (detailLines.length > 0) {
+          const sumLbl = isEn ? "Show Kernel Pool Tags & Service State Details" : "展开底层内核池标签与宿主服务状态明细";
+          extraDiag.push('<details style="margin-top:3px;font-size:11.5px;color:#475569;cursor:pointer"><summary style="font-weight:600;color:#334155;user-select:none">' + sumLbl + '</summary><div style="margin-top:4px;padding:5px 7px;background:rgba(15,23,42,0.03);border-radius:6px;cursor:default">' + detailLines.join("") + '</div></details>');
         }
 
         const privTip = (isAdmin === false) ? (isEn ? " (UAC prompt if elevation needed)" : "（若需提权将自动请求 UAC）") : "";

@@ -527,8 +527,8 @@ func runNativeDashboardWindow() {
 	dashBigIcon = bigIcon
 	dashSmallIcon = smallIcon
 	if dashBgBrush == 0 {
-		// Dark slate matching titlebar to avoid any white flash prior to WebView2 initial paint.
-		dashBgBrush, _, _ = procCreateSolidBrush.Call(0x002A170F)
+		// Porcelain background (#f3f6fb -> BGR 0x00FBF6F3) matching dashboard theme to prevent contrast flash.
+		dashBgBrush, _, _ = procCreateSolidBrush.Call(0x00FBF6F3)
 	}
 
 	hInst, _, _ := procGetModuleHandle.Call(0)
@@ -781,11 +781,13 @@ func dashWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 
 	case wmClose:
 		dashHiddenSince.Store(time.Now().Unix())
-		_, _, _ = procSetTimer.Call(hwnd, dashTimerHibernateID, dashHibernateIdleMS, 0)
+		// Hide top-level Win32 HWND first so the window disappears in <0.1ms without
+		// exposing an unpainted frame while WebView2 processes put_IsVisible(FALSE).
+		_, _, _ = procShowWindow.Call(hwnd, swHide)
 		if dashWVCtrl != 0 {
 			_ = comCall(dashWVCtrl, 4, 0) // put_IsVisible(FALSE)
 		}
-		_, _, _ = procShowWindow.Call(hwnd, swHide)
+		_, _, _ = procSetTimer.Call(hwnd, dashTimerHibernateID, dashHibernateIdleMS, 0)
 		return 0
 
 	case wmDestroy:
@@ -836,11 +838,13 @@ func handleDashAction(hwnd uintptr, act uintptr) {
 
 	case dashActHide:
 		dashHiddenSince.Store(time.Now().Unix())
-		_, _, _ = procSetTimer.Call(hwnd, dashTimerHibernateID, dashHibernateIdleMS, 0)
+		// Hide top-level Win32 HWND first so entering Lightweight Mode is instantaneous
+		// and never flashes a blank white WebView2 surface.
+		_, _, _ = procShowWindow.Call(hwnd, swHide)
 		if dashWVCtrl != 0 {
 			_ = comCall(dashWVCtrl, 4, 0)
 		}
-		_, _, _ = procShowWindow.Call(hwnd, swHide)
+		_, _, _ = procSetTimer.Call(hwnd, dashTimerHibernateID, dashHibernateIdleMS, 0)
 
 	case dashActDrag:
 		ks, _, _ := procGetAsyncKeyState.Call(vkLButton)

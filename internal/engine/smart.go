@@ -848,9 +848,7 @@ func (e *Engine) Whitelist() []string {
 	return out
 }
 
-func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family map[uint32]bool) bool {
-	extras := winmem.ReadSystemExtras(s.Snap.PageSize)
-	_, tightNUMA := NUMADisparity(extras.NUMANodes)
+func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family map[uint32]bool, tightNUMA bool) bool {
 	tier, label := computeSmartTier(a.AvailPct, tightNUMA)
 	a.SmartTier = tier
 	a.SmartLabel = label
@@ -1068,13 +1066,14 @@ func (e *Engine) trimCandidates(
 	limit int,
 ) []proc.Info {
 	self := uint32(os.Getpid())
+	selfFamily := proc.FamilyPIDs(procs, self)
 	minBytes := uint64(minWSMB * (1 << 20))
 	cands := make([]proc.Info, 0, len(procs))
 	for _, p := range procs {
 		if targetPID != 0 && p.PID != targetPID {
 			continue
 		}
-		if p.PID == self || p.PID <= 4 || family[p.PID] || e.isProtected(p.Name) {
+		if p.PID == self || selfFamily[p.PID] || p.PID <= 4 || family[p.PID] || e.isProtected(p.Name) {
 			continue
 		}
 		if p.SessionID == 0 {
@@ -1157,11 +1156,12 @@ func (e *Engine) OptimizeWithMode(extreme bool) (OptimizeResult, error) {
 		}
 	}
 	selfPID := uint32(os.Getpid())
+	selfFamily := proc.FamilyPIDs(s.Procs, selfPID)
 	const minBytes = 8 << 20
 
 	var targets []proc.Info
 	for _, p := range s.Procs {
-		if p.PID == selfPID || p.PID <= 4 || p.WorkingSet < minBytes {
+		if p.PID == selfPID || selfFamily[p.PID] || p.PID <= 4 || p.WorkingSet < minBytes {
 			continue
 		}
 		lowerName := strings.ToLower(strings.TrimSpace(p.Name))

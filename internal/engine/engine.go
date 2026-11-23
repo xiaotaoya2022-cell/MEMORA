@@ -324,7 +324,7 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	if opts.Act && e.cfg.Mode == "guard" {
 		if !a.FullscreenQuiet {
 			if e.cfg.Actions.SmartMemorySchedule {
-				if e.stepSmartSchedule(opts, s, &a, family) {
+				if e.stepSmartSchedule(opts, s, &a, family, tightNUMA) {
 					acted = true
 				}
 			} else {

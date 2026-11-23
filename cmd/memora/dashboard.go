@@ -172,6 +172,7 @@ type dashboardServer struct {
 	lastOptAt      time.Time
 	lastOptExtreme bool
 	lastOptRes     engine.OptimizeResult
+	deepRefreshing bool
 }
 
 func (d *dashboardServer) isClientActiveLocked() bool {
@@ -560,10 +561,23 @@ func (d *dashboardServer) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	d.mu.Lock()
 	d.lastClientAt = time.Now()
-	staleDeep := !d.hasDeep || time.Since(d.lastDeepAt) >= 15*time.Second
+	needSyncBootstrap := !d.hasDeep
+	needAsyncRefresh := d.hasDeep && time.Since(d.lastDeepAt) >= 15*time.Second && !d.deepRefreshing
+	if needAsyncRefresh {
+		d.deepRefreshing = true
+	}
 	d.mu.Unlock()
-	if staleDeep {
+	if needSyncBootstrap {
 		_, _, _ = d.refreshSnapshotNow(false)
+	} else if needAsyncRefresh {
+		go func() {
+			defer func() {
+				d.mu.Lock()
+				d.deepRefreshing = false
+				d.mu.Unlock()
+			}()
+			_, _, _ = d.refreshSnapshotNow(false)
+		}()
 	}
 	writeJSON(w, http.StatusOK, d.snapshotState())
 }

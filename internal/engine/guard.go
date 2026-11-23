@@ -324,11 +324,12 @@ func (e *Engine) applySoftQoS(s Sample, targetPID uint32, family map[uint32]bool
 		}
 	}
 	selfPID := uint32(os.Getpid())
+	selfFamily := proc.FamilyPIDs(s.Procs, selfPID)
 	for _, p := range s.Procs {
 		if targetPID != 0 && p.PID != targetPID {
 			continue
 		}
-		if p.SessionID == 0 || p.PID == selfPID || family[p.PID] || familyNames[strings.ToLower(p.Name)] || e.isProtected(p.Name) || e.qosDenied[p.PID] {
+		if p.SessionID == 0 || p.PID == selfPID || selfFamily[p.PID] || family[p.PID] || familyNames[strings.ToLower(p.Name)] || e.isProtected(p.Name) || e.qosDenied[p.PID] {
 			continue
 		}
 		if p.WorkingSet < softQoSMinBytes && p.Private < softQoSMinBytes {
