@@ -86,6 +86,7 @@ type assessmentDTO struct {
 	Orphans               []engine.OrphanProcess  `json:"orphans"`
 	AdaptiveCooldownProcs []string                `json:"adaptive_cooldown_procs,omitempty"`
 	KernelLeakBackoff     bool                    `json:"kernel_leak_backoff,omitempty"`
+	AFKFrozenCount        int                     `json:"afk_frozen_count,omitempty"`
 }
 
 type bloatCulpritDTO struct {
@@ -482,6 +483,7 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		Orphans:               a.Orphans,
 		AdaptiveCooldownProcs: a.AdaptiveCooldownProcs,
 		KernelLeakBackoff:     a.KernelLeakBackoff,
+		AFKFrozenCount:        a.AFKFrozenCount,
 	}
 }
 
@@ -1215,8 +1217,52 @@ if ($maxHandles -gt 5000) {
   }
 }
 
+$idleDrvRules = @(
+  @{ Drv = 'nfwfp'; Apps = @('leigod', 'nn', 'golink') },
+  @{ Drv = 'netfilter2'; Apps = @('leigod', 'nn', 'golink') },
+  @{ Drv = 'XLWFP'; Apps = @('Thunder', 'DownloadSDKServer') },
+  @{ Drv = 'VBoxUSBMon'; Apps = @('VirtualBox', 'VirtualBoxVM', 'VBoxSVC') },
+  @{ Drv = 'VBoxNetLwf'; Apps = @('VirtualBox', 'VirtualBoxVM', 'VBoxSVC') },
+  @{ Drv = 'VBoxSup'; Apps = @('VirtualBox', 'VirtualBoxVM', 'VBoxSVC') },
+  @{ Drv = 'MuMuVMMNetLwf'; Apps = @('MuMuPlayer', 'MuMuVMMHeadless', 'NemuPlayer') },
+  @{ Drv = 'MuMuVMMDrv'; Apps = @('MuMuPlayer', 'MuMuVMMHeadless', 'NemuPlayer') },
+  @{ Drv = 'NeSigVerify'; Apps = @('MuMuPlayer', 'MuMuVMMHeadless', 'NemuPlayer') },
+  @{ Drv = 'ISODrive'; Apps = @('UltraISO') },
+  @{ Drv = 'AMDRyzenMasterDriverV19'; Apps = @('AMD Ryzen Master') },
+  @{ Drv = 'npcap'; Apps = @('Wireshark', 'nmap', 'dumpcap') },
+  @{ Drv = 'hcmon'; Apps = @('vmware', 'vmware-vmx') },
+  @{ Drv = 'VMnetBridge'; Apps = @('vmware', 'vmware-vmx') },
+  @{ Drv = 'vmx86'; Apps = @('vmware', 'vmware-vmx') }
+)
+$unloadedIdleDrvs = New-Object System.Collections.Generic.List[string]
+foreach ($rule in $idleDrvRules) {
+  $drv = $rule.Drv
+  $q = (& sc.exe query $drv 2>$null) -join ' '
+  if ($LASTEXITCODE -eq 0 -and $q -match 'RUNNING') {
+    $appAlive = $false
+    foreach ($app in $rule.Apps) {
+      if ($null -ne (Get-Process -Name $app -ErrorAction SilentlyContinue)) {
+        $appAlive = $true
+        break
+      }
+    }
+    if (-not $appAlive) {
+      & sc.exe stop $drv *> $null
+      & sc.exe config $drv start= demand *> $null
+      Start-Sleep -Milliseconds 120
+      $afterQ = (& sc.exe query $drv 2>$null) -join ' '
+      if ($afterQ -match 'STOPPED') {
+        $unloadedIdleDrvs.Add($drv)
+      }
+    }
+  }
+}
+if ($unloadedIdleDrvs.Count -gt 0) {
+  $actions.Add("已免重启热卸载 $($unloadedIdleDrvs.Count) 个闲置第三方内核钩子驱动 (" + ($unloadedIdleDrvs -join ', ') + ") 并设为按需加载")
+}
+
 if ($actions.Count -eq 0 -and $notes.Count -eq 0) {
-  Write-Output "已完成驱动与宿主服务校验：当前未检测到运行中的冲突驱动"
+  Write-Output "已完成闲置内核驱动与宿主服务热清理校验"
 } else {
   $parts = @()
   if ($actions.Count -gt 0) { $parts += ($actions -join '；') }
@@ -1275,8 +1321,24 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 	}
 
 	msg, cmdErr := mitigateConflictDrivers(ctx, !winmem.IsAdmin())
+
+	// Immediately execute a zero-reboot system working set + file cache + standby deep sweep
+	// so bloated MmSystemCacheWs (6-10 GB) and starved NUMA Node0 are healed on the spot.
+	var optRes engine.OptimizeResult
+	_ = d.runOnEngine(func(eng *engine.Engine) {
+		optRes, _ = eng.OptimizeWithMode(true)
+	})
+
 	afterSnap, _, _ := d.refreshSnapshotNow(true)
 	state := d.snapshotState()
+
+	availDeltaMB := optRes.AvailGainMB
+	if beforeMetrics != nil && afterSnap.AvailPhys > beforeMetrics.AvailBytes {
+		delta := float64(afterSnap.AvailPhys-beforeMetrics.AvailBytes) / (1 << 20)
+		if delta > availDeltaMB {
+			availDeltaMB = delta
+		}
+	}
 
 	if snapProcs, pErr := proc.List(); pErr == nil {
 		afterM := engine.CaptureProbeMetrics(engine.Sample{At: time.Now(), Snap: afterSnap, Procs: snapProcs}, true)
@@ -1286,15 +1348,12 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 			Note:         msg,
 			Before:       beforeMetrics,
 			After:        &afterM,
-			AvailDeltaMB: func() float64 {
-				if beforeMetrics == nil {
-					return 0
-				}
-				return float64(int64(afterM.AvailBytes)-int64(beforeMetrics.AvailBytes)) / (1 << 20)
-			}(),
+			AvailDeltaMB: availDeltaMB,
 			Extra: map[string]any{
 				"ok":                 cmdErr == nil,
 				"conflict_mitigated": state.Deep.ConflictMitigated,
+				"opt_avail_gain_mb":  optRes.AvailGainMB,
+				"opt_ws_shrunk_mb":   optRes.WSShrunkMB,
 			},
 		})
 	}
@@ -1304,9 +1363,9 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 			msg = "冲突服务修复未能完成（若弹出 UAC 请选择允许）: " + cmdErr.Error()
 		}
 	} else if msg == "" {
-		msg = "已运行时卸载冲突过滤驱动并停止/降档联想后台服务（已在 config.json 启用每次开机自动静默压制）"
+		msg = fmt.Sprintf("已完成免重启驱动热清理与内核系统工作集深度释压（可用物理内存净增 %.0f MB）", availDeltaMB)
 	} else {
-		msg = msg + "（已启用开机自动静默压制；已积累的历史内核对象将在下次重启后清零）"
+		msg = fmt.Sprintf("%s；并已同步收紧内核系统工作集与后台服务（可用物理内存净增 %.0f MB，免重启即时生效）", msg, availDeltaMB)
 	}
 
 	res := map[string]any{

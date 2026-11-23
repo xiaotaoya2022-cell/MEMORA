@@ -196,6 +196,7 @@ func (e *Engine) restoreEligibleQoS(procs []proc.Info, family map[uint32]bool, s
 
 // RestoreAll immediately returns every MEMORA-managed process back to OS defaults.
 func (e *Engine) RestoreAll() {
+	e.resumeAllAFKFrozen()
 	if len(e.softState) == 0 {
 		return
 	}
@@ -211,6 +212,9 @@ func (e *Engine) RestoreAll() {
 }
 
 func (e *Engine) restoreFeature(mem, eco, below, storm bool) {
+	if storm {
+		e.resumeAllAFKFrozen()
+	}
 	if len(e.softState) == 0 {
 		return
 	}

@@ -81,6 +81,7 @@ type Assessment struct {
 	Orphans               []OrphanProcess
 	AdaptiveCooldownProcs []string `json:"adaptive_cooldown_procs,omitempty"`
 	KernelLeakBackoff     bool     `json:"kernel_leak_backoff,omitempty"`
+	AFKFrozenCount        int      `json:"afk_frozen_count,omitempty"`
 }
 
 // Plan is what the policy decided to do, and why.
@@ -181,6 +182,11 @@ type Engine struct {
 	burstInFlight     bool
 	lastBurstAt       time.Time
 	lastBurstSpawners []proc.BurstSpawnerStat
+
+	afkMu              sync.Mutex
+	afkFrozenPIDs      map[uint32]string
+	afkWatchdogRunning bool
+	lastSystemWSFlush  time.Time
 }
 
 // New builds an engine around already-loaded settings.
@@ -200,6 +206,7 @@ func New(cfg config.Config, jr *journal.Journal) *Engine {
 		softState:        map[uint32]softControl{},
 		qosDenied:        map[uint32]bool{},
 		seenPIDs:         map[uint32]bool{},
+		afkFrozenPIDs:    map[uint32]string{},
 	}
 }
 
@@ -357,6 +364,7 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 	a.AdaptiveCooldownProcs = e.AdaptiveCooldownNames()
 	e.maybeTriggerBurstCapture(a.SpawnRatePerMin, a.FullscreenQuiet)
 	a.BurstSpawners = e.BurstSpawners()
+	e.stepAFKSpawnFreeze(s, &a, family, canAct)
 
 	if e.lg != nil && opts.Act {
 		e.lg.RecordSample(s.At, e.interval(opts), !acted, a.FullscreenQuiet,

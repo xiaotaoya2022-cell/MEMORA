@@ -152,6 +152,8 @@ func cmdStatus(args []string) {
 			"family_protected":          len(family),
 			"top_nonpaged_tags":         diag.TopNonPagedTags,
 			"top_paged_tags":            diag.TopPagedTags,
+			"object_types":              diag.ObjectTypes,
+			"process_handle_holders":    diag.ProcessHandleHolders,
 			"hook_drivers":              diag.HookDrivers,
 			"leak_forecast":             engine.ComputeLeakForecast(snap, diag.Leak),
 			"top_process_groups":        diag.ProcGroups[:groupLimit],

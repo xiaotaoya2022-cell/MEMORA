@@ -692,4 +692,25 @@ func TestLeakForecastAndReboundExponentialBackoff(t *testing.T) {
 	}) {
 		t.Fatalf("expected HasLenovoConflictDrv=false when Lenovo drivers are absent")
 	}
+
+	// Verify AFK safety classifications and Session 0 bloated service trimming.
+	if !isAFKNeverSuspend("explorer.exe") || !isAFKNeverSuspend("antigravity.exe") || isAFKNeverSuspend("language_server.exe") {
+		t.Fatalf("unexpected isAFKNeverSuspend classification")
+	}
+	if !isAFKBackgroundPollSpawner("language_server.exe") || !isAFKBackgroundPollSpawner("git.exe") || isAFKBackgroundPollSpawner("explorer.exe") {
+		t.Fatalf("unexpected isAFKBackgroundPollSpawner classification")
+	}
+
+	eng := New(config.Default(), nil)
+	idle := now.Add(-15 * time.Minute)
+	eng.idleSince[701] = idle
+	eng.idleSince[702] = idle
+	svcProcs := []proc.Info{
+		{PID: 701, SessionID: 0, Name: "csrss.exe", WorkingSet: 120 << 20},
+		{PID: 702, SessionID: 0, Name: "SearchIndexer.exe", WorkingSet: 180 << 20},
+	}
+	cands := eng.trimCandidates(svcProcs, 0, map[uint32]bool{}, now, 35, 4*time.Minute, 2*time.Minute, 5)
+	if len(cands) != 1 || cands[0].PID != 702 {
+		t.Fatalf("expected only bloated non-core Session 0 service 702 in trimCandidates, got %+v", cands)
+	}
 }

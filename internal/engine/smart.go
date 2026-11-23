@@ -792,6 +792,14 @@ func (e *Engine) AddWhitelist(name string) bool {
 			restores++
 		}
 	}
+	e.afkMu.Lock()
+	for pid, frozenName := range e.afkFrozenPIDs {
+		if strings.EqualFold(frozenName, clean) {
+			_ = proc.ResumeProcess(pid)
+			delete(e.afkFrozenPIDs, pid)
+		}
+	}
+	e.afkMu.Unlock()
 	if e.lg != nil && restores > 0 {
 		e.lg.RecordSoft(0, restores)
 	}
@@ -883,9 +891,9 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	}
 
 	// Kernel-Leak-Aware Throttling: when non-reclaimable Ring-0 zombie leaks consume
-	// >= 25% of total physical RAM, available RAM stays chronically low regardless of
-	// user-space trims. Back off aggressively to stop thrashing small 20-40 MB processes.
-	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 {
+	// >= 25% of total physical RAM, back off from repeatedly trimming small 20-40 MB
+	// user-space apps unless NUMA Node 0 is starved or available RAM drops below 12%.
+	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 && !tightNUMA && a.AvailPct >= 12 {
 		a.KernelLeakBackoff = true
 		if tier >= 3 {
 			if minWS < 80 {
@@ -901,8 +909,8 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 			if procCooldown < backoffCD {
 				procCooldown = backoffCD
 			}
-			if globalInterval < 2*time.Minute {
-				globalInterval = 2 * time.Minute
+			if globalInterval < 90*time.Second {
+				globalInterval = 90 * time.Second
 			}
 			if maxBatch > 6 {
 				maxBatch = 6
@@ -910,7 +918,7 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 		}
 	}
 
-	if !e.lastSmartTrim.IsZero() && s.At.Sub(e.lastSmartTrim) < globalInterval {
+	if !e.lastSmartTrim.IsZero() && s.At.Sub(e.lastSmartTrim) < globalInterval && !tightNUMA {
 		return false
 	}
 
@@ -924,7 +932,9 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 		for _, p := range cands {
 			if delta, err := proc.TrimWorkingSetMeasured(p.PID); err == nil {
 				e.trimmedPIDs[p.PID] = s.At
-				e.recordTrimObservation(p, delta, s.At)
+				if p.SessionID != 0 {
+					e.recordTrimObservation(p, delta, s.At)
+				}
 				shrunkBytes += delta
 				trimmedTargets = append(trimmedTargets, journal.Target{
 					PID:          p.PID,
@@ -937,10 +947,24 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 
 	purged := false
 	flushed := false
-	if tier >= 3 && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
-		float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB &&
-		s.At.Sub(e.lastPurge) >= 5*time.Minute {
+	sysWSEmptied := false
+	sysWSBloated := s.Snap.InUse() > s.WS+s.Snap.KernelTotal+(3<<30)
+
+	// Zero-Reboot Automatic System Working Set & NUMA Node0 Self-Healing:
+	// When Kernel System Working Set (MmSystemCacheWs / Session WS) is bloated by >=3 GB
+	// or NUMA Node 0 is starved (<=256 MB) under Tier 3 pressure, flush system working sets
+	// automatically (8-minute cooldown, gated on >=12s user idle unless emergency).
+	if (tier >= 3 || tightNUMA) && (a.AvailPct < 18 || tightNUMA || sysWSBloated) &&
+		(e.lastSystemWSFlush.IsZero() || s.At.Sub(e.lastSystemWSFlush) >= 8*time.Minute) &&
+		(proc.UserIdleDuration() >= 12*time.Second || a.AvailPct < 10 || tightNUMA) {
 		MarkSelfMemoryAction()
+		if err := winmem.EmptyAllWorkingSets(); err == nil {
+			sysWSEmptied = true
+			e.lastSystemWSFlush = s.At
+		}
+		if err := winmem.TrimSystemFileCache(); err == nil {
+			flushed = true
+		}
 		if err := winmem.FlushModified(); err == nil {
 			flushed = true
 		}
@@ -948,9 +972,28 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 			purged = true
 			e.lastPurge = s.At
 		}
+	} else if tier >= 2 || tightNUMA {
+		if s.At.Sub(e.lastPurge) >= 3*time.Minute {
+			MarkSelfMemoryAction()
+			if err := winmem.TrimSystemFileCache(); err == nil {
+				flushed = true
+			}
+		}
+		if tier >= 3 && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
+			float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB &&
+			s.At.Sub(e.lastPurge) >= 4*time.Minute {
+			MarkSelfMemoryAction()
+			if err := winmem.FlushModified(); err == nil {
+				flushed = true
+			}
+			if err := winmem.PurgeLowPriorityStandby(); err == nil {
+				purged = true
+				e.lastPurge = s.At
+			}
+		}
 	}
 
-	if len(trimmedTargets) == 0 && !purged && !flushed {
+	if len(trimmedTargets) == 0 && !purged && !flushed && !sysWSEmptied {
 		return false
 	}
 	e.lastSmartTrim = s.At
@@ -968,13 +1011,20 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 
 	b := statsOf(*a)
 	action := "smart_schedule"
+	if sysWSEmptied {
+		action += "+empty_system_ws"
+	}
 	if purged {
 		action += "+purge_low_priority_standby"
+	}
+	reasonText := fmt.Sprintf("%s（可用 %.1f%%），动态收敛 %d 个后台进程工作集", label, a.AvailPct, len(trimmedTargets))
+	if sysWSEmptied {
+		reasonText = fmt.Sprintf("%s（可用 %.1f%%），自动收紧内核系统工作集与 %d 个后台/服务工作集（净增可用 %.0f MB）", label, a.AvailPct, len(trimmedTargets), availGainMB)
 	}
 	e.record(journal.Entry{
 		Kind:        "action",
 		Action:      action,
-		Reason:      fmt.Sprintf("%s（可用 %.1f%%），动态收敛 %d 个后台进程工作集", label, a.AvailPct, len(trimmedTargets)),
+		Reason:      reasonText,
 		Before:      &b,
 		Targets:     trimmedTargets,
 		ReclaimedMB: totalGainMB,
@@ -1006,8 +1056,13 @@ func (e *Engine) trimCandidates(
 		if targetPID != 0 && p.PID != targetPID {
 			continue
 		}
-		if p.SessionID == 0 || p.PID == self || p.PID <= 4 || family[p.PID] || e.isProtected(p.Name) {
+		if p.PID == self || p.PID <= 4 || family[p.PID] || e.isProtected(p.Name) {
 			continue
+		}
+		if p.SessionID == 0 {
+			if isProtectedCoreSession0(p.Name) || p.WorkingSet < 64<<20 {
+				continue
+			}
 		}
 		if p.WorkingSet < minBytes {
 			continue
@@ -1167,9 +1222,11 @@ func (e *Engine) OptimizeWithMode(extreme bool) (OptimizeResult, error) {
 		}
 	}
 
-	if extreme {
+	sysWSBloated := s.Snap.InUse() > s.WS+s.Snap.KernelTotal+(2<<30)
+	if extreme || a.AvailPct < 35 || sysWSBloated {
 		if err := winmem.EmptyAllWorkingSets(); err == nil {
 			res.AllWorkingSetsEmptied = true
+			e.lastSystemWSFlush = started
 		}
 	}
 	if err := winmem.TrimSystemFileCache(); err == nil {
@@ -1396,4 +1453,183 @@ func (e *Engine) AdaptiveCooldownNames() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func isAFKNeverSuspend(name string) bool {
+	low := strings.ToLower(strings.TrimSpace(name))
+	if isProtectedCoreSession0(low) || proc.IsShellOrSystemHost(low) {
+		return true
+	}
+	switch low {
+	case "svchost.exe", "taskhostw.exe", "conhost.exe", "dllhost.exe", "runtimebroker.exe",
+		"applicationframehost.exe", "systemsettings.exe", "taskmgr.exe", "explorer.exe",
+		"hipsdaemon.exe", "hipstray.exe", "usysdiag.exe", "wsctrlsvc.exe", "msmpeng.exe",
+		"antigravity.exe", "omnicode.exe", "zcode.exe", "code.exe", "cursor.exe", "windsurf.exe",
+		"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "wechat.exe", "weixin.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAFKBackgroundPollSpawner(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "language_server.exe", "git.exe", "rg.exe", "cockpit-tools.exe", "esurfingsvr.exe",
+		"wetype_update.exe", "nexus.exe", "ocr.exe", "doubaowork.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]bool, canAct bool) {
+	idleDur := proc.UserIdleDuration()
+	if !canAct || a.FullscreenQuiet || !e.cfg.Actions.SuppressSpawnStorm || idleDur < 4*time.Minute {
+		e.resumeAllAFKFrozen()
+		a.AFKFrozenCount = 0
+		return
+	}
+
+	alive := make(map[uint32]proc.Info, len(s.Procs))
+	for _, p := range s.Procs {
+		alive[p.PID] = p
+	}
+
+	// Clean up any PIDs that exited while frozen.
+	e.afkMu.Lock()
+	for pid := range e.afkFrozenPIDs {
+		if _, ok := alive[pid]; !ok {
+			delete(e.afkFrozenPIDs, pid)
+		}
+	}
+	e.afkMu.Unlock()
+
+	selfPID := uint32(os.Getpid())
+	candidatePIDs := make(map[uint32]string)
+
+	for _, sp := range a.TopSpawners {
+		if sp.ChildCount >= 3 {
+			if p, ok := alive[sp.PID]; ok {
+				candidatePIDs[p.PID] = p.Name
+			}
+		}
+	}
+	for _, bs := range a.BurstSpawners {
+		if bs.EstRatePerHour >= 180 {
+			if p, ok := alive[bs.ParentPID]; ok {
+				candidatePIDs[p.PID] = p.Name
+			}
+		}
+	}
+	for _, p := range s.Procs {
+		if e.isUserSuppressedSpawner(p.Name) || isKnownStormHost(p.Name) {
+			candidatePIDs[p.PID] = p.Name
+			continue
+		}
+		if (e.lastLeakSuspected || a.SpawnRatePerMin >= 15) && isAFKBackgroundPollSpawner(p.Name) {
+			candidatePIDs[p.PID] = p.Name
+		}
+	}
+
+	var newlyFrozen []journal.Target
+	e.afkMu.Lock()
+	for pid, name := range candidatePIDs {
+		if pid <= 4 || pid == selfPID {
+			continue
+		}
+		if _, already := e.afkFrozenPIDs[pid]; already {
+			continue
+		}
+		if e.isProtected(name) || isAFKNeverSuspend(name) {
+			continue
+		}
+		p, ok := alive[pid]
+		if !ok {
+			continue
+		}
+		if err := proc.SuspendProcess(pid); err == nil {
+			e.afkFrozenPIDs[pid] = p.Name
+			newlyFrozen = append(newlyFrozen, journal.Target{
+				PID:          p.PID,
+				Name:         p.Name,
+				WorkingSetMB: float64(p.WorkingSet) / (1 << 20),
+			})
+		}
+	}
+	frozenTotal := len(e.afkFrozenPIDs)
+	e.afkMu.Unlock()
+
+	a.AFKFrozenCount = frozenTotal
+	if frozenTotal > 0 {
+		e.ensureAFKWatchdog()
+	}
+	if len(newlyFrozen) > 0 {
+		e.record(journal.Entry{
+			Kind:    "storm_throttle",
+			Action:  "afk_freeze_spawners",
+			Reason:  fmt.Sprintf("检测到用户离席满 %.0f 分钟，已临时冻结 %d 个后台高频派生源（键鼠活动 120ms 内瞬时唤醒，彻底阻断夜间僵尸进程累积）", idleDur.Minutes(), len(newlyFrozen)),
+			Targets: newlyFrozen,
+		})
+	}
+}
+
+func (e *Engine) ensureAFKWatchdog() {
+	e.afkMu.Lock()
+	if e.afkWatchdogRunning || len(e.afkFrozenPIDs) == 0 {
+		e.afkMu.Unlock()
+		return
+	}
+	e.afkWatchdogRunning = true
+	e.afkMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(120 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			e.afkMu.Lock()
+			empty := len(e.afkFrozenPIDs) == 0
+			e.afkMu.Unlock()
+			if empty {
+				e.afkMu.Lock()
+				e.afkWatchdogRunning = false
+				e.afkMu.Unlock()
+				return
+			}
+			if proc.UserIdleDuration() < 2*time.Second {
+				e.resumeAllAFKFrozen()
+				e.afkMu.Lock()
+				e.afkWatchdogRunning = false
+				e.afkMu.Unlock()
+				return
+			}
+		}
+	}()
+}
+
+func (e *Engine) resumeAllAFKFrozen() {
+	e.afkMu.Lock()
+	if len(e.afkFrozenPIDs) == 0 {
+		e.afkMu.Unlock()
+		return
+	}
+	toResume := make(map[uint32]string, len(e.afkFrozenPIDs))
+	for pid, name := range e.afkFrozenPIDs {
+		toResume[pid] = name
+	}
+	e.afkFrozenPIDs = map[uint32]string{}
+	e.afkMu.Unlock()
+
+	var resumed []journal.Target
+	for pid, name := range toResume {
+		_ = proc.ResumeProcess(pid)
+		resumed = append(resumed, journal.Target{PID: pid, Name: name})
+	}
+	if len(resumed) > 0 {
+		e.record(journal.Entry{
+			Kind:    "storm_throttle",
+			Action:  "afk_resume_spawners",
+			Reason:  fmt.Sprintf("检测到键鼠恢复活动，已瞬时唤醒 %d 个离席冻结的后台派生进程", len(resumed)),
+			Targets: resumed,
+		})
+	}
 }
