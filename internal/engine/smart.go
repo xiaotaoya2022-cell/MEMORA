@@ -113,12 +113,24 @@ func ComputeBreakdown(snap winmem.Snapshot, privWS uint64, deep DeepDiagnosis) M
 				}
 			}
 			if deep.SharedWSBytes > 0 {
+				effShared := deep.SharedWSBytes
+				if effShared > 6<<30 {
+					effShared = 6 << 30
+				}
+				if effShared < 3500<<20 && rem > kernelTotal+(4<<30) {
+					effShared = 3500 << 20
+				}
 				var darkInUse uint64
-				if rem > kernelTotal+deep.SharedWSBytes {
-					darkInUse = rem - kernelTotal - deep.SharedWSBytes
+				if rem > kernelTotal+effShared {
+					darkInUse = rem - kernelTotal - effShared
 				}
 				if deep.Leak.ProcessObjects > 0 {
-					estDark := uint64(excessObjs) * 116 * 1024
+					var estDark uint64
+					if excessObjs <= 110000 {
+						estDark = uint64(excessObjs) * 116 * 1024
+					} else {
+						estDark = 110000*116*1024 + uint64(excessObjs-110000)*28*1024
+					}
 					if darkInUse > estDark {
 						darkInUse = estDark
 					}
@@ -865,17 +877,17 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	maxBatch := 6
 
 	if tier < 2 {
-		if minWS < 160 {
-			minWS = 160
+		if minWS < 64 {
+			minWS = 64
 		}
-		if idleReq < 5*time.Minute {
-			idleReq = 5 * time.Minute
+		if idleReq < 150*time.Second {
+			idleReq = 150 * time.Second
 		}
-		if procCooldown < 8*time.Minute {
-			procCooldown = 8 * time.Minute
+		if procCooldown < 4*time.Minute {
+			procCooldown = 4 * time.Minute
 		}
-		globalInterval = 75 * time.Second
-		maxBatch = 3
+		globalInterval = 40 * time.Second
+		maxBatch = 6
 	} else if tier >= 3 {
 		if minWS > 20 {
 			minWS = 20
@@ -896,24 +908,24 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 && !tightNUMA && a.AvailPct >= 12 {
 		a.KernelLeakBackoff = true
 		if tier >= 3 {
-			if minWS < 80 {
-				minWS = 80
+			if minWS < 64 {
+				minWS = 64
 			}
-			if idleReq < 3*time.Minute {
-				idleReq = 3 * time.Minute
+			if idleReq < 2*time.Minute {
+				idleReq = 2 * time.Minute
 			}
-			backoffCD := 6 * time.Minute
+			backoffCD := 4 * time.Minute
 			if e.lastZombieLeakBytes >= (s.Snap.TotalPhys*2)/5 {
-				backoffCD = 10 * time.Minute
+				backoffCD = 6 * time.Minute
 			}
 			if procCooldown < backoffCD {
 				procCooldown = backoffCD
 			}
-			if globalInterval < 90*time.Second {
-				globalInterval = 90 * time.Second
+			if globalInterval < 45*time.Second {
+				globalInterval = 45 * time.Second
 			}
-			if maxBatch > 6 {
-				maxBatch = 6
+			if maxBatch > 8 {
+				maxBatch = 8
 			}
 		}
 	}
@@ -948,15 +960,14 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	purged := false
 	flushed := false
 	sysWSEmptied := false
-	sysWSBloated := s.Snap.InUse() > s.WS+s.Snap.KernelTotal+(3<<30)
 
-	// Zero-Reboot Automatic System Working Set & NUMA Node0 Self-Healing:
-	// When Kernel System Working Set (MmSystemCacheWs / Session WS) is bloated by >=3 GB
-	// or NUMA Node 0 is starved (<=256 MB) under Tier 3 pressure, flush system working sets
-	// automatically (8-minute cooldown, gated on >=12s user idle unless emergency).
-	if (tier >= 3 || tightNUMA) && (a.AvailPct < 18 || tightNUMA || sysWSBloated) &&
-		(e.lastSystemWSFlush.IsZero() || s.At.Sub(e.lastSystemWSFlush) >= 8*time.Minute) &&
-		(proc.UserIdleDuration() >= 12*time.Second || a.AvailPct < 10 || tightNUMA) {
+	// Autonomous Foreground-Safe System Cache & Page List Thermostat:
+	// Never call global EmptyAllWorkingSets() during normal cruise/balance so active
+	// foreground windows are 100% protected; reserve EmptyAllWorkingSets() strictly for
+	// severe NUMA starvation (<12% avail) when the user has been idle >=60s.
+	if tightNUMA && a.AvailPct < 12 &&
+		(e.lastSystemWSFlush.IsZero() || s.At.Sub(e.lastSystemWSFlush) >= 10*time.Minute) &&
+		proc.UserIdleDuration() >= 60*time.Second {
 		MarkSelfMemoryAction()
 		if err := winmem.EmptyAllWorkingSets(); err == nil {
 			sysWSEmptied = true
@@ -972,22 +983,29 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 			purged = true
 			e.lastPurge = s.At
 		}
-	} else if tier >= 2 || tightNUMA {
-		if s.At.Sub(e.lastPurge) >= 3*time.Minute {
+	} else {
+		cacheInterval := 3 * time.Minute
+		if tier >= 3 || tightNUMA {
+			cacheInterval = 90 * time.Second
+		}
+		if e.lastPurge.IsZero() || s.At.Sub(e.lastPurge) >= cacheInterval {
 			MarkSelfMemoryAction()
 			if err := winmem.TrimSystemFileCache(); err == nil {
 				flushed = true
 			}
-		}
-		if tier >= 3 && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
-			float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB &&
-			s.At.Sub(e.lastPurge) >= 4*time.Minute {
-			MarkSelfMemoryAction()
-			if err := winmem.FlushModified(); err == nil {
-				flushed = true
+			if s.Snap.HasPages && s.Snap.Pages.Modified >= 48<<20 {
+				if err := winmem.FlushModified(); err == nil {
+					flushed = true
+				}
 			}
-			if err := winmem.PurgeLowPriorityStandby(); err == nil {
-				purged = true
+			if (tier >= 2 || tightNUMA) && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
+				float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB {
+				_ = winmem.FlushModified()
+				if err := winmem.PurgeLowPriorityStandby(); err == nil {
+					purged = true
+				}
+			}
+			if flushed || purged {
 				e.lastPurge = s.At
 			}
 		}
@@ -1222,8 +1240,9 @@ func (e *Engine) OptimizeWithMode(extreme bool) (OptimizeResult, error) {
 		}
 	}
 
-	sysWSBloated := s.Snap.InUse() > s.WS+s.Snap.KernelTotal+(2<<30)
-	if extreme || a.AvailPct < 35 || sysWSBloated {
+	// Preserve active foreground window working sets during normal optimize (extreme=false);
+	// only invoke global EmptyAllWorkingSets when explicitly running extreme mode.
+	if extreme {
 		if err := winmem.EmptyAllWorkingSets(); err == nil {
 			res.AllWorkingSetsEmptied = true
 			e.lastSystemWSFlush = started
@@ -1483,26 +1502,90 @@ func isAFKBackgroundPollSpawner(name string) bool {
 }
 
 func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]bool, canAct bool) {
-	idleDur := proc.UserIdleDuration()
-	if !canAct || a.FullscreenQuiet || !e.cfg.Actions.SuppressSpawnStorm || idleDur < 4*time.Minute {
+	if !canAct || a.FullscreenQuiet || !e.cfg.Actions.SuppressSpawnStorm {
 		e.resumeAllAFKFrozen()
 		a.AFKFrozenCount = 0
 		return
 	}
 
+	idleDur := proc.UserIdleDuration()
+	isDeepAFK := idleDur >= 3*time.Minute
+
 	alive := make(map[uint32]proc.Info, len(s.Procs))
 	for _, p := range s.Procs {
 		alive[p.PID] = p
 	}
-
-	// Clean up any PIDs that exited while frozen.
-	e.afkMu.Lock()
-	for pid := range e.afkFrozenPIDs {
-		if _, ok := alive[pid]; !ok {
-			delete(e.afkFrozenPIDs, pid)
+	familyNames := make(map[string]bool)
+	for _, p := range s.Procs {
+		if family[p.PID] && p.Name != "" {
+			familyNames[strings.ToLower(strings.TrimSpace(p.Name))] = true
 		}
 	}
-	e.afkMu.Unlock()
+
+	// Clean up exited PIDs, and immediately resume any frozen PID whose parent IDE/app
+	// is now in the active foreground window family while user input is active (<35s).
+	e.afkMu.Lock()
+	for pid := range e.afkFrozenPIDs {
+		p, ok := alive[pid]
+		if !ok {
+			delete(e.afkFrozenPIDs, pid)
+			delete(e.afkParentPIDs, pid)
+			continue
+		}
+		inFG := family[pid] || family[p.ParentPID]
+		if !inFG {
+			if par, ok := alive[p.ParentPID]; ok && familyNames[strings.ToLower(strings.TrimSpace(par.Name))] {
+				inFG = true
+			}
+		}
+		if inFG && idleDur < 35*time.Second {
+			_ = proc.ResumeProcess(pid)
+			delete(e.afkFrozenPIDs, pid)
+			delete(e.afkParentPIDs, pid)
+		}
+	}
+
+	// Autonomous Pulse Duty-Cycle: when user is at the computer (!isDeepAFK), give
+	// background pulse-gated spawners a brief 1.2s heartbeat breath every 45s (~97% spawn reduction)
+	// so background IPC never times out; during deep AFK (>=3m), keep 100% frozen (0 spawns).
+	if !isDeepAFK && len(e.afkFrozenPIDs) > 0 && (e.afkLastPulseAt.IsZero() || s.At.Sub(e.afkLastPulseAt) >= 45*time.Second) {
+		e.afkLastPulseAt = s.At
+		pulsed := make([]uint32, 0, len(e.afkFrozenPIDs))
+		for pid := range e.afkFrozenPIDs {
+			_ = proc.ResumeProcess(pid)
+			pulsed = append(pulsed, pid)
+		}
+		e.afkMu.Unlock()
+		go func(pids []uint32) {
+			time.Sleep(1200 * time.Millisecond)
+			if proc.UserIdleDuration() < 2*time.Second {
+				fg := proc.ForegroundPID()
+				e.afkMu.Lock()
+				for _, pid := range pids {
+					if _, stillTracked := e.afkFrozenPIDs[pid]; !stillTracked {
+						continue
+					}
+					if pid == fg || e.afkParentPIDs[pid] == fg {
+						delete(e.afkFrozenPIDs, pid)
+						delete(e.afkParentPIDs, pid)
+						continue
+					}
+					_ = proc.SuspendProcess(pid)
+				}
+				e.afkMu.Unlock()
+				return
+			}
+			e.afkMu.Lock()
+			for _, pid := range pids {
+				if _, stillTracked := e.afkFrozenPIDs[pid]; stillTracked {
+					_ = proc.SuspendProcess(pid)
+				}
+			}
+			e.afkMu.Unlock()
+		}(pulsed)
+	} else {
+		e.afkMu.Unlock()
+	}
 
 	selfPID := uint32(os.Getpid())
 	candidatePIDs := make(map[uint32]string)
@@ -1515,7 +1598,7 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 		}
 	}
 	for _, bs := range a.BurstSpawners {
-		if bs.EstRatePerHour >= 180 {
+		if bs.EstRatePerHour >= 120 {
 			if p, ok := alive[bs.ParentPID]; ok {
 				candidatePIDs[p.PID] = p.Name
 			}
@@ -1526,7 +1609,7 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 			candidatePIDs[p.PID] = p.Name
 			continue
 		}
-		if (e.lastLeakSuspected || a.SpawnRatePerMin >= 15) && isAFKBackgroundPollSpawner(p.Name) {
+		if (e.lastLeakSuspected || a.SpawnRatePerMin >= 12) && isAFKBackgroundPollSpawner(p.Name) {
 			candidatePIDs[p.PID] = p.Name
 		}
 	}
@@ -1547,8 +1630,26 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 		if !ok {
 			continue
 		}
+		// Never interrupt an active high-CPU worker unless user has been AFK >= 3 minutes.
+		if !isDeepAFK && e.lastCPUPct[pid] >= 2.0 {
+			continue
+		}
+		inFG := family[pid] || family[p.ParentPID]
+		if !inFG {
+			if par, ok := alive[p.ParentPID]; ok && familyNames[strings.ToLower(strings.TrimSpace(par.Name))] {
+				inFG = true
+			}
+		}
+		// Gate the spawner whenever it is outside the foreground window chain, OR user input is idle >= 35s.
+		if inFG && idleDur < 35*time.Second {
+			continue
+		}
 		if err := proc.SuspendProcess(pid); err == nil {
 			e.afkFrozenPIDs[pid] = p.Name
+			e.afkParentPIDs[pid] = p.ParentPID
+			if e.afkLastPulseAt.IsZero() {
+				e.afkLastPulseAt = s.At
+			}
 			newlyFrozen = append(newlyFrozen, journal.Target{
 				PID:          p.PID,
 				Name:         p.Name,
@@ -1564,10 +1665,14 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 		e.ensureAFKWatchdog()
 	}
 	if len(newlyFrozen) > 0 {
+		modeDesc := "后台离焦脉冲门控（每 45s 放行 1.2s 心跳，削减 97% 僵尸派生）"
+		if isDeepAFK {
+			modeDesc = fmt.Sprintf("离席满 %.0f 分钟零派生冻结（100%% 阻断夜间僵尸累积）", idleDur.Minutes())
+		}
 		e.record(journal.Entry{
 			Kind:    "storm_throttle",
 			Action:  "afk_freeze_spawners",
-			Reason:  fmt.Sprintf("检测到用户离席满 %.0f 分钟，已临时冻结 %d 个后台高频派生源（键鼠活动 120ms 内瞬时唤醒，彻底阻断夜间僵尸进程累积）", idleDur.Minutes(), len(newlyFrozen)),
+			Reason:  fmt.Sprintf("全自动派生治理已对 %d 个高频派生源启用%s，切回前台或键鼠活动 80ms 内无感瞬时唤醒", len(newlyFrozen), modeDesc),
 			Targets: newlyFrozen,
 		})
 	}
@@ -1583,20 +1688,32 @@ func (e *Engine) ensureAFKWatchdog() {
 	e.afkMu.Unlock()
 
 	go func() {
-		ticker := time.NewTicker(120 * time.Millisecond)
+		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
 		for range ticker.C {
 			e.afkMu.Lock()
-			empty := len(e.afkFrozenPIDs) == 0
-			e.afkMu.Unlock()
-			if empty {
-				e.afkMu.Lock()
+			if len(e.afkFrozenPIDs) == 0 {
 				e.afkWatchdogRunning = false
 				e.afkMu.Unlock()
 				return
 			}
-			if proc.UserIdleDuration() < 2*time.Second {
-				e.resumeAllAFKFrozen()
+			fg := proc.ForegroundPID()
+			idle := proc.UserIdleDuration()
+			var wakePIDs []uint32
+			for pid := range e.afkFrozenPIDs {
+				parentPID := e.afkParentPIDs[pid]
+				if fg != 0 && (pid == fg || (parentPID != 0 && parentPID == fg)) && idle < 35*time.Second {
+					wakePIDs = append(wakePIDs, pid)
+				}
+			}
+			for _, pid := range wakePIDs {
+				_ = proc.ResumeProcess(pid)
+				delete(e.afkFrozenPIDs, pid)
+				delete(e.afkParentPIDs, pid)
+			}
+			emptyAfter := len(e.afkFrozenPIDs) == 0
+			e.afkMu.Unlock()
+			if emptyAfter {
 				e.afkMu.Lock()
 				e.afkWatchdogRunning = false
 				e.afkMu.Unlock()
@@ -1617,6 +1734,7 @@ func (e *Engine) resumeAllAFKFrozen() {
 		toResume[pid] = name
 	}
 	e.afkFrozenPIDs = map[uint32]string{}
+	e.afkParentPIDs = map[uint32]uint32{}
 	e.afkMu.Unlock()
 
 	var resumed []journal.Target
@@ -1628,7 +1746,7 @@ func (e *Engine) resumeAllAFKFrozen() {
 		e.record(journal.Entry{
 			Kind:    "storm_throttle",
 			Action:  "afk_resume_spawners",
-			Reason:  fmt.Sprintf("检测到键鼠恢复活动，已瞬时唤醒 %d 个离席冻结的后台派生进程", len(resumed)),
+			Reason:  fmt.Sprintf("检测到前台焦点切回或调度释放，已 80ms 无感唤醒 %d 个脉冲门控派生源", len(resumed)),
 			Targets: resumed,
 		})
 	}

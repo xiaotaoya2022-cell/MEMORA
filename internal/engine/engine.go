@@ -185,6 +185,8 @@ type Engine struct {
 
 	afkMu              sync.Mutex
 	afkFrozenPIDs      map[uint32]string
+	afkParentPIDs      map[uint32]uint32
+	afkLastPulseAt     time.Time
 	afkWatchdogRunning bool
 	lastSystemWSFlush  time.Time
 }
@@ -207,6 +209,7 @@ func New(cfg config.Config, jr *journal.Journal) *Engine {
 		qosDenied:        map[uint32]bool{},
 		seenPIDs:         map[uint32]bool{},
 		afkFrozenPIDs:    map[uint32]string{},
+		afkParentPIDs:    map[uint32]uint32{},
 	}
 }
 
@@ -419,11 +422,11 @@ func (e *Engine) maybeTriggerBurstCapture(spawnRatePerMin float64, fullscreenQui
 	if fullscreenQuiet {
 		return
 	}
-	if spawnRatePerMin < 30 && !e.lastLeakSuspected {
+	if spawnRatePerMin < 12 && !e.lastLeakSuspected {
 		return
 	}
 	e.burstMu.Lock()
-	if e.burstInFlight || (!e.lastBurstAt.IsZero() && time.Since(e.lastBurstAt) < 10*time.Minute) {
+	if e.burstInFlight || (!e.lastBurstAt.IsZero() && time.Since(e.lastBurstAt) < 3*time.Minute) {
 		e.burstMu.Unlock()
 		return
 	}
@@ -442,7 +445,7 @@ func (e *Engine) maybeTriggerBurstCapture(spawnRatePerMin float64, fullscreenQui
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		res := proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 30*time.Millisecond, leakKB)
+		res := proc.CaptureBurstSpawners(ctx, 2500*time.Millisecond, 15*time.Millisecond, leakKB)
 		e.burstMu.Lock()
 		e.lastBurstSpawners = res
 		e.lastBurstAt = time.Now()

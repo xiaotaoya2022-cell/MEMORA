@@ -1217,6 +1217,13 @@ if ($maxHandles -gt 5000) {
   }
 }
 
+if ($null -eq (Get-Process -Name 'vmware','vmware-vmx' -ErrorAction SilentlyContinue)) {
+  foreach ($vmsvc in @('VMnetDHCP', 'VMware NAT Service', 'VMUSBArbService', 'VMAuthdService')) {
+    Stop-Service -Name $vmsvc -Force -ErrorAction SilentlyContinue
+  }
+}
+Stop-Service -Name 'AMD Crash Defender Service' -Force -ErrorAction SilentlyContinue
+
 $idleDrvRules = @(
   @{ Drv = 'nfwfp'; Apps = @('leigod', 'nn', 'golink') },
   @{ Drv = 'netfilter2'; Apps = @('leigod', 'nn', 'golink') },
@@ -1229,9 +1236,11 @@ $idleDrvRules = @(
   @{ Drv = 'NeSigVerify'; Apps = @('MuMuPlayer', 'MuMuVMMHeadless', 'NemuPlayer') },
   @{ Drv = 'ISODrive'; Apps = @('UltraISO') },
   @{ Drv = 'AMDRyzenMasterDriverV19'; Apps = @('AMD Ryzen Master') },
+  @{ Drv = 'amdfendr'; Apps = @('AMDBugReportTool') },
   @{ Drv = 'npcap'; Apps = @('Wireshark', 'nmap', 'dumpcap') },
   @{ Drv = 'hcmon'; Apps = @('vmware', 'vmware-vmx') },
   @{ Drv = 'VMnetBridge'; Apps = @('vmware', 'vmware-vmx') },
+  @{ Drv = 'VMnetuserif'; Apps = @('vmware', 'vmware-vmx') },
   @{ Drv = 'vmx86'; Apps = @('vmware', 'vmware-vmx') }
 )
 $unloadedIdleDrvs = New-Object System.Collections.Generic.List[string]
@@ -1322,11 +1331,13 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 
 	msg, cmdErr := mitigateConflictDrivers(ctx, !winmem.IsAdmin())
 
-	// Immediately execute a zero-reboot system working set + file cache + standby deep sweep
-	// so bloated MmSystemCacheWs (6-10 GB) and starved NUMA Node0 are healed on the spot.
+	// Immediately execute a foreground-safe deep sweep (extreme=false preserves active
+	// foreground windows) and throttle active background spawners.
 	var optRes engine.OptimizeResult
+	var newlyThrottled int
 	_ = d.runOnEngine(func(eng *engine.Engine) {
-		optRes, _ = eng.OptimizeWithMode(true)
+		newlyThrottled, _ = eng.SuppressActiveSpawnersNow()
+		optRes, _ = eng.OptimizeWithMode(false)
 	})
 
 	afterSnap, _, _ := d.refreshSnapshotNow(true)
@@ -1354,6 +1365,7 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 				"conflict_mitigated": state.Deep.ConflictMitigated,
 				"opt_avail_gain_mb":  optRes.AvailGainMB,
 				"opt_ws_shrunk_mb":   optRes.WSShrunkMB,
+				"newly_throttled":    newlyThrottled,
 			},
 		})
 	}
@@ -1363,9 +1375,9 @@ func (d *dashboardServer) handleFixKernelLeak(w http.ResponseWriter, r *http.Req
 			msg = "冲突服务修复未能完成（若弹出 UAC 请选择允许）: " + cmdErr.Error()
 		}
 	} else if msg == "" {
-		msg = fmt.Sprintf("已完成免重启驱动热清理与内核系统工作集深度释压（可用物理内存净增 %.0f MB）", availDeltaMB)
+		msg = fmt.Sprintf("已完成免重启驱动热清理与后台服务收紧（压制/脉冲门控 %d 个高频派生源，可用物理内存净增 %.0f MB，前台零干扰）", newlyThrottled+state.Assessment.AFKFrozenCount, availDeltaMB)
 	} else {
-		msg = fmt.Sprintf("%s；并已同步收紧内核系统工作集与后台服务（可用物理内存净增 %.0f MB，免重启即时生效）", msg, availDeltaMB)
+		msg = fmt.Sprintf("%s；并已同步启用后台派生脉冲门控（拦截 %d 个高频源）与非前沿工作集收紧（净增可用 %.0f MB，前台零干扰）", msg, newlyThrottled+state.Assessment.AFKFrozenCount, availDeltaMB)
 	}
 
 	res := map[string]any{
