@@ -87,6 +87,9 @@ type assessmentDTO struct {
 	AdaptiveCooldownProcs []string                `json:"adaptive_cooldown_procs,omitempty"`
 	KernelLeakBackoff     bool                    `json:"kernel_leak_backoff,omitempty"`
 	AFKFrozenCount        int                     `json:"afk_frozen_count,omitempty"`
+	AFKFrozenNames        []string                `json:"afk_frozen_names,omitempty"`
+	SoftCappedCount       int                     `json:"soft_capped_count,omitempty"`
+	GitDirectOptimized    bool                    `json:"git_direct_optimized,omitempty"`
 }
 
 type bloatCulpritDTO struct {
@@ -485,6 +488,9 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		AdaptiveCooldownProcs: a.AdaptiveCooldownProcs,
 		KernelLeakBackoff:     a.KernelLeakBackoff,
 		AFKFrozenCount:        a.AFKFrozenCount,
+		AFKFrozenNames:        a.AFKFrozenNames,
+		SoftCappedCount:       a.SoftCappedCount,
+		GitDirectOptimized:    a.GitDirectOptimized,
 	}
 }
 
@@ -1282,6 +1288,34 @@ foreach ($rule in $idleDrvRules) {
 }
 if ($unloadedIdleDrvs.Count -gt 0) {
   $actions.Add("已免重启热卸载 $($unloadedIdleDrvs.Count) 个闲置第三方内核钩子驱动 (" + ($unloadedIdleDrvs -join ', ') + ") 并设为按需加载")
+}
+
+# Safely place Git\mingw64\bin ahead of Git\bin in User PATH so git.exe runs directly
+# in 1 process instead of 2 (-50% process creation overhead, zero shadow on System32 tools).
+$mingwBin = Join-Path $env:ProgramFiles 'Git\mingw64\bin'
+$gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+$gitCmd = Join-Path $env:ProgramFiles 'Git\cmd'
+if ((Test-Path (Join-Path $mingwBin 'git.exe')) -and (Test-Path (Join-Path $gitBin 'git.exe'))) {
+  $uPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if ($uPath) {
+    $parts = $uPath -split ';' | Where-Object { $_.Trim() -ne '' }
+    $mingwIdx = -1; $shimIdx = -1
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+      $c = $parts[$i].Trim().TrimEnd('\')
+      if ($c -ieq $mingwBin -and $mingwIdx -lt 0) { $mingwIdx = $i }
+      if (($c -ieq $gitBin -or $c -ieq $gitCmd) -and $shimIdx -lt 0) { $shimIdx = $i }
+    }
+    if ($shimIdx -ge 0 -and ($mingwIdx -lt 0 -or $mingwIdx -gt $shimIdx)) {
+      $newParts = New-Object System.Collections.Generic.List[string]
+      for ($i = 0; $i -lt $parts.Count; $i++) {
+        if ($i -eq $shimIdx) { $newParts.Add($mingwBin) }
+        if ($mingwIdx -ge 0 -and $i -eq $mingwIdx) { continue }
+        $newParts.Add($parts[$i])
+      }
+      [Environment]::SetEnvironmentVariable('Path', ($newParts -join ';'), 'User')
+      $actions.Add("已优化用户 PATH 对齐 Git\mingw64\bin 直连（后续 Git 调用减半子进程派生）")
+    }
+  }
 }
 
 if ($actions.Count -eq 0 -and $notes.Count -eq 0) {

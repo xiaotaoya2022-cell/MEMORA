@@ -1653,13 +1653,14 @@ const dashboardHTML = `<!doctype html>
           <span class="pill pill-slate" id="game-pill">前沿检测中</span>
           <span class="pill pill-slate" id="family-pill">前景保护 --</span>
           <span class="pill pill-slate" id="self-pill">MEMORA 自身 --</span>
+          <span class="pill pill-violet" id="pulse-pill" style="display:none"></span>
         </div>
 
-        <button class="btn-primary" id="btn-optimize" onclick="doOptimize()">
+        <button class="btn-primary" id="btn-optimize" onclick="doOptimize()" title="安全收紧闲置后台/服务工作集、文件缓存与低优待机页（前台窗口零干扰）">
           <svg class="ico" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <span id="btn-opt-text">立即深度释压</span>
         </button>
-        <div class="btn-primary-hint" id="btn-primary-hint-text">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
+        <div class="btn-primary-hint" id="btn-primary-hint-text" style="display:none">安全收紧闲置后台/服务工作集、文件缓存与低优待机页</div>
         <button class="btn-ghost" id="btn-optimize-extreme" onclick="doOptimizeExtreme()" title="手动全域清空所有空闲工作集、系统文件缓存与待机列表（极客模式，仅手动触发）">
           <span id="btn-opt-ext-ico" style="display:inline-flex"><svg class="ico ico-sm" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="11 2 3 13 10 13 9 22 17 11 10 11 11 2"/><path d="M18 5l-3 5h4l-3 5"/></svg></span>
           <span id="btn-opt-ext-text">强力全域释压（含服务与缓存）</span>
@@ -3192,6 +3193,26 @@ const dashboardHTML = `<!doctype html>
       document.getElementById("family-pill").textContent = t("family_protected", { n: a.family_protected || 0 });
       document.getElementById("self-pill").textContent = t("self_stats", { ws: fmtBytes(s.self_ws_bytes), hd: s.self_handles || 0 });
 
+      const pulsePill = document.getElementById("pulse-pill");
+      if (pulsePill) {
+        const isEnNow = currentLang === "en-US";
+        if (isGuard && (a.afk_frozen_count || 0) > 0) {
+          pulsePill.style.display = "inline-flex";
+          pulsePill.className = "pill pill-violet";
+          pulsePill.textContent = isEnNow
+            ? ("Pulse-Gated " + a.afk_frozen_count + " · 80ms Wake")
+            : ("脉冲拦截 " + a.afk_frozen_count + " 源 · 80ms 秒醒");
+        } else if (isGuard && (a.soft_capped_count || 0) > 0) {
+          pulsePill.style.display = "inline-flex";
+          pulsePill.className = "pill pill-blue";
+          pulsePill.textContent = isEnNow
+            ? ("Soft WS Capped: " + a.soft_capped_count)
+            : ("软配额控温 " + a.soft_capped_count + " 项");
+        } else {
+          pulsePill.style.display = "none";
+        }
+      }
+
       syncModeSwitchUI(isGuard);
 
       const baseEl = document.getElementById("baseline-pill");
@@ -3366,8 +3387,8 @@ const dashboardHTML = `<!doctype html>
         badgeTruth.className = "tab-count";
       }
       renderStormChips(cfg.suppressed_spawners || []);
-      renderBurstSpawners(a.burst_spawners || []);
-      renderSpawners(a.top_spawners || [], cfg.suppressed_spawners || []);
+      renderBurstSpawners(a.burst_spawners || [], a.afk_frozen_names || [], !!a.git_direct_optimized);
+      renderSpawners(a.top_spawners || [], cfg.suppressed_spawners || [], a.afk_frozen_names || []);
 
       // Tab 3: Custom-drawn managed processes + journal
       const managedList = s.managed_processes || [];
@@ -3708,26 +3729,35 @@ const dashboardHTML = `<!doctype html>
       ).join("");
     }
 
-    function renderBurstSpawners(list) {
+    function renderBurstSpawners(list, frozenNames, gitOpt) {
       const bar = document.getElementById("burst-spawners-bar");
       if (!bar) return;
       const isEn = currentLang === "en-US";
-      if (!list || list.length === 0) {
+      const frozenSet = {};
+      (frozenNames || []).forEach(n => { frozenSet[String(n).toLowerCase()] = true; });
+      if ((!list || list.length === 0) && (!frozenNames || frozenNames.length === 0)) {
         bar.style.display = "none";
         return;
       }
       bar.style.display = "block";
       const hdr = isEn
-        ? '<b style="color:#1d4ed8">Burst Capture (Short-Lived &lt;100ms Spawns):</b> '
+        ? '<b style="color:#1d4ed8">Burst Capture (&lt;100ms Spawns):</b> '
         : '<b style="color:#1d4ed8">短命脉冲抓捕（&lt;100ms 瞬逝子进程）:</b> ';
-      const items = list.slice(0, 4).map(b => {
+      const gitPill = gitOpt
+        ? (' <span class="pill pill-green" style="padding:0 5px;font-size:10px">' + (isEn ? 'Git Direct-Path (-50%)' : 'Git 直连减半已生效') + '</span>')
+        : '';
+      const items = (list || []).slice(0, 4).map(b => {
         const rate = Math.round(b.est_rate_per_hour || 0);
-        const leakStr = (b.est_leak_mb_per_hour >= 10)
-          ? (' <span class="pill pill-red" style="padding:0 5px;font-size:10px">≈+' + Math.round(b.est_leak_mb_per_hour) + ' MB/' + (isEn ? 'h' : '时') + '</span>')
-          : "";
-        return '<code>' + esc(b.parent_name || "?") + '(' + (b.parent_pid || 0) + ') → ' + esc(b.child_name) + '</code> ×' + b.captured_count + ' (~' + rate + '/' + (isEn ? 'h' : '时') + ')' + leakStr;
+        const lowP = String(b.parent_name || "").toLowerCase();
+        const isGated = !!frozenSet[lowP];
+        const statusPill = isGated
+          ? (' <span class="pill pill-violet" style="padding:0 5px;font-size:10px">' + (isEn ? 'Pulse-Gated' : '已脉冲门控') + '</span>')
+          : ((b.est_leak_mb_per_hour >= 10)
+            ? (' <span class="pill pill-red" style="padding:0 5px;font-size:10px">≈+' + Math.round(b.est_leak_mb_per_hour) + ' MB/' + (isEn ? 'h' : '时') + '</span>')
+            : "");
+        return '<code>' + esc(b.parent_name || "?") + '(' + (b.parent_pid || 0) + ') → ' + esc(b.child_name) + '</code> ×' + b.captured_count + ' (~' + rate + '/' + (isEn ? 'h' : '时') + ')' + statusPill;
       }).join(" · ");
-      bar.innerHTML = hdr + items;
+      bar.innerHTML = hdr + (items || (isEn ? ('Pulse-gated: ' + esc((frozenNames || []).join(', '))) : ('当前脉冲门控拦截: ' + esc((frozenNames || []).join('、'))))) + gitPill;
     }
 
     function procIconURL(pid, name) {
@@ -3739,20 +3769,24 @@ const dashboardHTML = `<!doctype html>
       return '<img class="mini-proc-ico" loading="lazy" decoding="async" src="' + procIconURL(pid, name) + '" alt="" onerror="this.style.display=\'none\'" />';
     }
 
-    function renderSpawners(list, stormList) {
+    function renderSpawners(list, stormList, frozenNames) {
       const tb = document.getElementById("tbl-spawners");
       const isEn = currentLang === "en-US";
       const inRoster = {};
       (stormList || []).forEach(n => { inRoster[String(n).toLowerCase()] = true; });
+      const frozenSet = {};
+      (frozenNames || []).forEach(n => { frozenSet[String(n).toLowerCase()] = true; });
       if (!list || list.length === 0) {
         tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">' + (isEn ? 'No high-frequency spawners observed in the last 5 mins' : '近 5 分钟暂无高频子进程派生宿主') + '</td></tr>';
         return;
       }
       tb.innerHTML = list.map(sp => {
         const lowName = String(sp.name || "").toLowerCase();
-        const badge = sp.throttled
-          ? '<span class="pill pill-red">' + (isEn ? 'Suppressed' : '已压制') + '</span>'
-          : '<span class="pill pill-slate">' + (isEn ? 'Observing' : '正常观测') + '</span>';
+        const badge = frozenSet[lowName]
+          ? '<span class="pill pill-violet">' + (isEn ? 'Pulse-Gated' : '脉冲门控中') + '</span>'
+          : (sp.throttled
+            ? '<span class="pill pill-red">' + (isEn ? 'Suppressed' : '已压制') + '</span>'
+            : '<span class="pill pill-slate">' + (isEn ? 'Observing' : '正常观测') + '</span>');
         const opBtn = inRoster[lowName]
           ? '<span class="card-sub">' + (isEn ? 'In List' : '已在名单') + '</span>'
           : '<button class="btn-sm" style="padding:2px 7px;font-size:11px" onclick="addStormName(\'' + esc(sp.name).replace(/'/g, "\\'") + '\')">' + (isEn ? '+ List' : '+ 名单') + '</button>';
@@ -3813,6 +3847,7 @@ const dashboardHTML = `<!doctype html>
         const cpuPill = p.below_normal_cpu ? '<span class="pill pill-amber" style="padding:1px 6px;font-size:11px">BelowNormal</span>' : "";
         const stormPill = p.storm_throttled ? '<span class="pill pill-red" style="padding:1px 6px;font-size:11px">' + SVG.zap + '<span>' + (isEn ? 'Storm Throttled' : '风暴压制中') + '</span></span>' : "";
         const adaptPill = p.adaptive_cooldown ? '<span class="pill pill-violet" style="padding:1px 6px;font-size:11px">' + (isEn ? 'Anti-Rebound' : '防反扑自校准') + '</span>' : "";
+        const capPill = p.soft_ws_capped ? '<span class="pill pill-blue" style="padding:1px 6px;font-size:11px">' + (isEn ? 'Soft WS Cap' : '软配额控温') + '</span>' : "";
         const barPct = Math.max(4, Math.min(100, ((p.working_set_mb || 0) * 100) / maxWS)).toFixed(1);
         const lowName = String(p.name || "").toLowerCase();
         const escapedName = esc(p.name).replace(/'/g, "\\'");
@@ -3833,7 +3868,7 @@ const dashboardHTML = `<!doctype html>
           '      <span class="proc-pid">PID ' + p.pid + '</span>',
           '      <span class="card-sub">' + (isEn ? 'Managed ' : '已托管 ') + p.managed_seconds + 's</span>',
           '    </div>',
-          '    <div class="proc-tags">' + stormPill + adaptPill + prioPill + ecoPill + cpuPill + '</div>',
+          '    <div class="proc-tags">' + stormPill + capPill + adaptPill + prioPill + ecoPill + cpuPill + '</div>',
           '  </div>',
           '  <div class="proc-metrics">',
           '    <div class="proc-mem-txt">' + fmtMB(p.working_set_mb) + (isEn ? ' WS' : ' 工作集') + '</div>',

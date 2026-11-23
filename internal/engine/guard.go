@@ -21,6 +21,7 @@ type softControl struct {
 	EcoQoS         bool
 	BelowNormal    bool
 	StormThrottled bool
+	SoftWSCapped   bool
 	Name           string
 	WorkingSet     uint64
 	Private        uint64
@@ -136,6 +137,9 @@ func (e *Engine) recordNewOrphans(orphans []OrphanProcess) {
 }
 
 func restoreProcessControls(pid uint32, st softControl) {
+	if st.SoftWSCapped {
+		_ = proc.ClearSoftWorkingSetCap(pid)
+	}
 	if st.MemoryPriority != 0 && st.MemoryPriority != proc.MemoryPriorityNormal {
 		_ = proc.SetMemoryPriority(pid, proc.MemoryPriorityNormal)
 	}
@@ -224,6 +228,10 @@ func (e *Engine) restoreFeature(mem, eco, below, storm bool) {
 			_ = proc.SetMemoryPriority(pid, proc.MemoryPriorityNormal)
 			st.MemoryPriority = 0
 		}
+		if mem && st.SoftWSCapped {
+			_ = proc.ClearSoftWorkingSetCap(pid)
+			st.SoftWSCapped = false
+		}
 		if eco && st.EcoQoS {
 			_ = proc.SetEcoQoS(pid, false)
 			st.EcoQoS = false
@@ -239,9 +247,10 @@ func (e *Engine) restoreFeature(mem, eco, below, storm bool) {
 				st.MemoryPriority = 0
 				st.EcoQoS = false
 				st.BelowNormal = false
+				st.SoftWSCapped = false
 			}
 		}
-		if st.MemoryPriority == 0 && !st.EcoQoS && !st.BelowNormal && !st.StormThrottled {
+		if st.MemoryPriority == 0 && !st.EcoQoS && !st.BelowNormal && !st.StormThrottled && !st.SoftWSCapped {
 			delete(e.softState, pid)
 			restores++
 		} else {
@@ -286,6 +295,20 @@ func (e *Engine) applySoftQoS(s Sample, targetPID uint32, family map[uint32]bool
 			(tier >= 3 || e.isReboundProne(p.Name) || (!st.ManagedAt.IsZero() && s.At.Sub(st.ManagedAt) >= 8*time.Minute)) {
 			if err := proc.SetMemoryPriority(pid, proc.MemoryPriorityVeryLow); err == nil {
 				st.MemoryPriority = proc.MemoryPriorityVeryLow
+			}
+		}
+		// Apply Win32 soft working-set quota ceiling (Flags=0, non-hard) on rebound-prone or
+		// storm-throttled idle background hogs so MmWorkingSetManager holds them gently in Ring 0.
+		if wantMem && !st.SoftWSCapped && (e.isReboundProne(p.Name) || st.StormThrottled) && p.WorkingSet >= 64<<20 {
+			capBytes := p.WorkingSet / 2
+			if capBytes < 48<<20 {
+				capBytes = 48 << 20
+			}
+			if capBytes > 160<<20 {
+				capBytes = 160 << 20
+			}
+			if err := proc.ApplySoftWorkingSetCap(pid, 8<<20, capBytes); err == nil {
+				st.SoftWSCapped = true
 			}
 		}
 		if wantEco && !st.EcoQoS && (tier >= 3 || orphanSet[pid] || (!st.ManagedAt.IsZero() && s.At.Sub(st.ManagedAt) >= 5*time.Minute)) {

@@ -713,4 +713,20 @@ func TestLeakForecastAndReboundExponentialBackoff(t *testing.T) {
 	if len(cands) != 1 || cands[0].PID != 702 {
 		t.Fatalf("expected only bloated non-core Session 0 service 702 in trimCandidates, got %+v", cands)
 	}
+
+	// Verify Adaptive Process Profile fast-yield convergence (high-yield low-rebound app eligible at 65% of idleReq).
+	eng.procYieldMB["fastbloater.exe"] = 240.0
+	eng.idleSince[703] = now.Add(-170 * time.Second) // < 4m (240s), but >= 65% of 4m (156s)
+	fastProcs := []proc.Info{
+		{PID: 703, SessionID: 1, Name: "FastBloater.exe", WorkingSet: 150 << 20},
+	}
+	fastCands := eng.trimCandidates(fastProcs, 0, map[uint32]bool{}, now, 35, 4*time.Minute, 2*time.Minute, 5)
+	if len(fastCands) != 1 || fastCands[0].PID != 703 {
+		t.Fatalf("expected high-yield low-rebound app 703 to qualify early via Process Profile, got %+v", fastCands)
+	}
+
+	// Verify ApplySoftWorkingSetCap refuses system PIDs <= 4.
+	if err := proc.ApplySoftWorkingSetCap(4, 8<<20, 64<<20); err == nil {
+		t.Fatalf("expected ApplySoftWorkingSetCap to refuse system PID 4")
+	}
 }

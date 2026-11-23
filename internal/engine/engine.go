@@ -82,6 +82,9 @@ type Assessment struct {
 	AdaptiveCooldownProcs []string `json:"adaptive_cooldown_procs,omitempty"`
 	KernelLeakBackoff     bool     `json:"kernel_leak_backoff,omitempty"`
 	AFKFrozenCount        int      `json:"afk_frozen_count,omitempty"`
+	AFKFrozenNames        []string `json:"afk_frozen_names,omitempty"`
+	SoftCappedCount       int      `json:"soft_capped_count,omitempty"`
+	GitDirectOptimized    bool     `json:"git_direct_optimized,omitempty"`
 }
 
 // Plan is what the policy decided to do, and why.
@@ -189,27 +192,35 @@ type Engine struct {
 	afkLastPulseAt     time.Time
 	afkWatchdogRunning bool
 	lastSystemWSFlush  time.Time
+
+	procYieldMB       map[string]float64
+	svcHealMu         sync.Mutex
+	svcHealInFlight   bool
+	lastServiceHealAt map[string]time.Time
 }
 
 // New builds an engine around already-loaded settings.
 func New(cfg config.Config, jr *journal.Journal) *Engine {
+	_, _ = proc.EnsureGitDirectPath()
 	return &Engine{
-		cfg:              cfg,
-		jr:               jr,
-		lastCPU:          map[uint32]cpuMark{},
-		lastCPUPct:       map[uint32]float64{},
-		idleSince:        map[uint32]time.Time{},
-		trimmedPIDs:      map[uint32]time.Time{},
-		lastTrimObs:      map[uint32]trimObservation{},
-		reboundCounts:    map[string]int{},
-		baseline:         map[uint32]baselineProc{},
-		seenParents:      map[uint32]parentRecord{},
-		announcedOrphans: map[uint32]bool{},
-		softState:        map[uint32]softControl{},
-		qosDenied:        map[uint32]bool{},
-		seenPIDs:         map[uint32]bool{},
-		afkFrozenPIDs:    map[uint32]string{},
-		afkParentPIDs:    map[uint32]uint32{},
+		cfg:               cfg,
+		jr:                jr,
+		lastCPU:           map[uint32]cpuMark{},
+		lastCPUPct:        map[uint32]float64{},
+		idleSince:         map[uint32]time.Time{},
+		trimmedPIDs:       map[uint32]time.Time{},
+		lastTrimObs:       map[uint32]trimObservation{},
+		reboundCounts:     map[string]int{},
+		baseline:          map[uint32]baselineProc{},
+		seenParents:       map[uint32]parentRecord{},
+		announcedOrphans:  map[uint32]bool{},
+		softState:         map[uint32]softControl{},
+		qosDenied:         map[uint32]bool{},
+		seenPIDs:          map[uint32]bool{},
+		afkFrozenPIDs:     map[uint32]string{},
+		afkParentPIDs:     map[uint32]uint32{},
+		procYieldMB:       map[string]float64{},
+		lastServiceHealAt: map[string]time.Time{},
 	}
 }
 
@@ -364,10 +375,19 @@ func (e *Engine) Step(opts Options) (Assessment, error) {
 		}
 	}
 	a.SoftManaged = len(e.softState)
+	softCapped := 0
+	for _, st := range e.softState {
+		if st.SoftWSCapped {
+			softCapped++
+		}
+	}
+	a.SoftCappedCount = softCapped
+	a.GitDirectOptimized, _ = proc.EnsureGitDirectPath()
 	a.AdaptiveCooldownProcs = e.AdaptiveCooldownNames()
 	e.maybeTriggerBurstCapture(a.SpawnRatePerMin, a.FullscreenQuiet)
 	a.BurstSpawners = e.BurstSpawners()
 	e.stepAFKSpawnFreeze(s, &a, family, canAct)
+	e.stepAutonomousServiceHealer(s, canAct, a.FullscreenQuiet)
 
 	if e.lg != nil && opts.Act {
 		e.lg.RecordSample(s.At, e.interval(opts), !acted, a.FullscreenQuiet,

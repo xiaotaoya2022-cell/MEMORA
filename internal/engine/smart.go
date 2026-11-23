@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"memora/internal/config"
@@ -31,6 +34,7 @@ type ManagedProcessInfo struct {
 	EcoQoS           bool    `json:"eco_qos"`
 	BelowNormalCPU   bool    `json:"below_normal_cpu"`
 	StormThrottled   bool    `json:"storm_throttled"`
+	SoftWSCapped     bool    `json:"soft_ws_capped,omitempty"`
 	AdaptiveCooldown bool    `json:"adaptive_cooldown"`
 	ManagedSeconds   int64   `json:"managed_seconds"`
 }
@@ -302,6 +306,7 @@ func (e *Engine) ManagedProcesses() []ManagedProcessInfo {
 			EcoQoS:           st.EcoQoS,
 			BelowNormalCPU:   st.BelowNormal,
 			StormThrottled:   st.StormThrottled,
+			SoftWSCapped:     st.SoftWSCapped,
 			AdaptiveCooldown: e.isReboundProne(st.Name),
 			ManagedSeconds:   sec,
 		})
@@ -1087,11 +1092,20 @@ func (e *Engine) trimCandidates(
 		if e.lastCPUPct[p.PID] >= 2.0 {
 			continue
 		}
+		rebounds := e.reboundCount(p.Name)
+		effIdleReq := idleReq
+		if rebounds == 0 && e.procYieldMB[strings.ToLower(strings.TrimSpace(p.Name))] >= 120 {
+			// Adaptive Process Profile: proven high-yield, low-rebound background bloaters
+			// converge 35% faster after leaving the foreground.
+			effIdleReq = (idleReq * 65) / 100
+			if effIdleReq < 75*time.Second {
+				effIdleReq = 75 * time.Second
+			}
+		}
 		since, ok := e.idleSince[p.PID]
-		if !ok || now.Sub(since) < idleReq {
+		if !ok || now.Sub(since) < effIdleReq {
 			continue
 		}
-		rebounds := e.reboundCount(p.Name)
 		effCooldown := computeReboundCooldown(procCooldown, rebounds)
 		if rebounds >= 30 && minWSMB >= 60 && p.WorkingSet < 120<<20 {
 			continue
@@ -1361,6 +1375,12 @@ func (e *Engine) recordTrimObservation(p proc.Info, shrunkBytes uint64, at time.
 		Name:        p.Name,
 		PostTrimWS:  postWS,
 		ShrunkBytes: shrunkBytes,
+	}
+	if key := strings.ToLower(strings.TrimSpace(p.Name)); key != "" {
+		if e.procYieldMB == nil {
+			e.procYieldMB = map[string]float64{}
+		}
+		e.procYieldMB[key] += float64(shrunkBytes) / (1 << 20)
 	}
 }
 
@@ -1658,9 +1678,22 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 		}
 	}
 	frozenTotal := len(e.afkFrozenPIDs)
+	nameSet := make(map[string]struct{}, frozenTotal)
+	for _, nm := range e.afkFrozenPIDs {
+		if nm != "" {
+			nameSet[strings.ToLower(strings.TrimSpace(nm))] = struct{}{}
+		}
+	}
 	e.afkMu.Unlock()
 
+	var frozenNames []string
+	for nm := range nameSet {
+		frozenNames = append(frozenNames, nm)
+	}
+	sort.Strings(frozenNames)
+
 	a.AFKFrozenCount = frozenTotal
+	a.AFKFrozenNames = frozenNames
 	if frozenTotal > 0 {
 		e.ensureAFKWatchdog()
 	}
@@ -1750,4 +1783,91 @@ func (e *Engine) resumeAllAFKFrozen() {
 			Targets: resumed,
 		})
 	}
+}
+
+// stepAutonomousServiceHealer implements a zero-touch circuit breaker for known leaky
+// third-party background daemon services (strictly whitelisted: ESurfingSvr >= 15k handles,
+// LenovoSmartService >= 8k handles). It only triggers when the user has been idle >= 2 minutes
+// and not in fullscreen, with a 4-hour per-service cooldown, and never touches OS core services.
+func (e *Engine) stepAutonomousServiceHealer(s Sample, canAct, fullscreenQuiet bool) {
+	if !canAct || fullscreenQuiet || !winmem.IsAdmin() {
+		return
+	}
+	if proc.UserIdleDuration() < 2*time.Minute {
+		return
+	}
+
+	type healCandidate struct {
+		svcName string
+		proc    proc.Info
+	}
+	var target *healCandidate
+	for _, p := range s.Procs {
+		low := strings.ToLower(strings.TrimSpace(p.Name))
+		switch low {
+		case "esurfingsvr.exe":
+			if p.Handles >= 15000 {
+				target = &healCandidate{svcName: "ESurfingSvr", proc: p}
+			}
+		case "lenovosmartservice.exe":
+			if p.Handles >= 8000 {
+				target = &healCandidate{svcName: "LenovoSmartService", proc: p}
+			}
+		}
+		if target != nil {
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+
+	e.svcHealMu.Lock()
+	if e.svcHealInFlight {
+		e.svcHealMu.Unlock()
+		return
+	}
+	if last, ok := e.lastServiceHealAt[target.svcName]; ok && time.Since(last) < 4*time.Hour {
+		e.svcHealMu.Unlock()
+		return
+	}
+	e.svcHealInFlight = true
+	e.lastServiceHealAt[target.svcName] = time.Now()
+	e.svcHealMu.Unlock()
+
+	go func(c healCandidate) {
+		defer func() {
+			e.svcHealMu.Lock()
+			e.svcHealInFlight = false
+			e.svcHealMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		stopCmd := exec.CommandContext(ctx, "sc.exe", "stop", c.svcName)
+		stopCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+		_ = stopCmd.Run()
+
+		time.Sleep(1500 * time.Millisecond)
+
+		startCmd := exec.CommandContext(ctx, "sc.exe", "start", c.svcName)
+		startCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+		err := startCmd.Run()
+
+		resStr := "ok"
+		if err != nil {
+			resStr = "partial"
+		}
+		e.record(journal.Entry{
+			Kind:   "action",
+			Action: "auto_heal_service",
+			Reason: fmt.Sprintf("全自动高句柄熔断自愈：检测到第三方后台服务 %s(%d) 句柄泄漏达 %d 个，已在用户闲置期间静默重启归零", c.svcName, c.proc.PID, c.proc.Handles),
+			Targets: []journal.Target{{
+				PID:          c.proc.PID,
+				Name:         c.proc.Name,
+				WorkingSetMB: float64(c.proc.WorkingSet) / (1 << 20),
+			}},
+			Result: resStr,
+		})
+	}(*target)
 }
