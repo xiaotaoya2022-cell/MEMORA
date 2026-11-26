@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"memora/internal/config"
 	"memora/internal/engine"
 	"memora/internal/journal"
 	"memora/internal/ledger"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -276,5 +278,37 @@ func TestDashboardAuthAndAPIEndpoints(t *testing.T) {
 	resRest.Body.Close()
 	if resRest.StatusCode != http.StatusOK || !restPayload.OK || len(restPayload.State.ManagedProcesses) != 0 {
 		t.Fatalf("POST /api/restore failed: code=%d ok=%v managed=%d", resRest.StatusCode, restPayload.OK, len(restPayload.State.ManagedProcesses))
+	}
+}
+
+func TestFiniteFloatAndWriteJSONSafety(t *testing.T) {
+	if finiteFloat(math.NaN()) != 0 || finiteFloat(math.Inf(1)) != 0 || finiteFloat(math.Inf(-1)) != 0 {
+		t.Fatalf("expected non-finite floats to sanitize to 0")
+	}
+	if got := finiteFloat(42.5); got != 42.5 {
+		t.Fatalf("expected finite float 42.5, got %v", got)
+	}
+
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{"ok": true, "val": 12.5})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if cl := rec.Header().Get("Content-Length"); cl == "" || cl == "0" {
+		t.Fatalf("expected non-zero Content-Length header, got %q", cl)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("valid payload failed JSON unmarshal: %v", err)
+	}
+
+	recBad := httptest.NewRecorder()
+	writeJSON(recBad, http.StatusOK, map[string]any{"bad": math.NaN()})
+	if recBad.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 fallback on NaN payload, got %d", recBad.Code)
+	}
+	var errPayload map[string]string
+	if err := json.Unmarshal(recBad.Body.Bytes(), &errPayload); err != nil || errPayload["error"] == "" {
+		t.Fatalf("expected valid JSON error fallback, got %q (err=%v)", recBad.Body.String(), err)
 	}
 }

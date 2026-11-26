@@ -169,6 +169,7 @@ func (e *Engine) restoreEligibleQoS(procs []proc.Info, family map[uint32]bool, s
 		if !ok {
 			delete(e.softState, pid)
 			delete(e.qosDenied, pid)
+			delete(e.stormLogAt, pid)
 			continue
 		}
 		st.Name = p.Name

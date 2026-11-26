@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,17 +82,47 @@ func Open(dir string) (*Ledger, error) {
 	p := filepath.Join(dir, "ledger.json")
 	now := time.Now()
 	d := Data{StartedAt: now, UpdatedAt: now}
+	dirty := false
 	if raw, err := os.ReadFile(p); err == nil {
 		var parsed Data
 		if json.Unmarshal(raw, &parsed) == nil && !parsed.StartedAt.IsZero() {
 			d = parsed
 		}
 	}
+	if len(d.ReboundProcs) > 0 {
+		cleaned := make(map[string]int, len(d.ReboundProcs))
+		for k, v := range d.ReboundProcs {
+			ck := sanitizeProcKey(k)
+			if ck == "" || ck != k {
+				dirty = true
+			}
+			if ck != "" && v > 0 {
+				if v > cleaned[ck] {
+					cleaned[ck] = v
+				}
+			}
+		}
+		d.ReboundProcs = cleaned
+	}
 	return &Ledger{
 		path:     p,
 		data:     d,
+		dirty:    dirty,
 		lastSave: now,
 	}, nil
+}
+
+func sanitizeProcKey(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	for _, r := range trimmed {
+		if r < 32 {
+			return ""
+		}
+	}
+	return strings.ToLower(trimmed)
 }
 
 // Path returns the on-disk JSON file location.
@@ -199,14 +230,15 @@ func (l *Ledger) RecordBaselineExtras(now time.Time, vidMB float64, procObjects 
 
 // RecordReboundProc persists adaptive trim rebound counts across restarts.
 func (l *Ledger) RecordReboundProc(name string, count int) {
-	if name == "" || count <= 0 {
+	ck := sanitizeProcKey(name)
+	if ck == "" || count <= 0 {
 		return
 	}
 	l.mu.Lock()
 	if l.data.ReboundProcs == nil {
 		l.data.ReboundProcs = make(map[string]int)
 	}
-	l.data.ReboundProcs[name] = count
+	l.data.ReboundProcs[ck] = count
 	l.dirty = true
 	l.mu.Unlock()
 }

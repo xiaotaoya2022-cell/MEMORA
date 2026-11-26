@@ -340,7 +340,7 @@ func (e *Engine) RecentJournal(n int) []journal.Entry {
 func computeSmartTier(availPct float64, tightNUMA bool) (int, string) {
 	inUsePct := 100 - availPct
 	switch {
-	case inUsePct > 86 || tightNUMA:
+	case inUsePct > 86 || (tightNUMA && availPct < 28):
 		return 3, "三级 · 高压急救"
 	case inUsePct >= 78:
 		return 2, "二级 · 主动平衡"
@@ -626,16 +626,22 @@ func (e *Engine) applyStormThrottle(p proc.Info, family map[uint32]bool, reason 
 		st.StormThrottled = true
 		e.softState[p.PID] = st
 		if changed {
-			e.record(journal.Entry{
-				Kind:   "storm_throttle",
-				Action: "suppress_spawn_storm",
-				Reason: reason,
-				Targets: []journal.Target{{
-					PID:          p.PID,
-					Name:         p.Name,
-					WorkingSetMB: float64(p.WorkingSet) / (1 << 20),
-				}},
-			})
+			if e.stormLogAt == nil {
+				e.stormLogAt = map[uint32]time.Time{}
+			}
+			if lastLog, seen := e.stormLogAt[p.PID]; !seen || now.Sub(lastLog) >= 15*time.Minute {
+				e.stormLogAt[p.PID] = now
+				e.record(journal.Entry{
+					Kind:   "storm_throttle",
+					Action: "suppress_spawn_storm",
+					Reason: reason,
+					Targets: []journal.Target{{
+						PID:          p.PID,
+						Name:         p.Name,
+						WorkingSetMB: float64(p.WorkingSet) / (1 << 20),
+					}},
+				})
+			}
 		}
 		return changed
 	}
@@ -908,7 +914,8 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 	// Kernel-Leak-Aware Throttling: when non-reclaimable Ring-0 zombie leaks consume
 	// >= 25% of total physical RAM, back off from repeatedly trimming small 20-40 MB
 	// user-space apps unless NUMA Node 0 is starved or available RAM drops below 12%.
-	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 && !tightNUMA && a.AvailPct >= 12 {
+	numaUrgent := tightNUMA && a.AvailPct < 28
+	if e.lastLeakSuspected && s.Snap.TotalPhys > 0 && e.lastZombieLeakBytes >= s.Snap.TotalPhys/4 && !numaUrgent && a.AvailPct >= 12 {
 		a.KernelLeakBackoff = true
 		if tier >= 3 {
 			if minWS < 64 {
@@ -933,7 +940,7 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 		}
 	}
 
-	if !e.lastSmartTrim.IsZero() && s.At.Sub(e.lastSmartTrim) < globalInterval && !tightNUMA {
+	if !e.lastSmartTrim.IsZero() && s.At.Sub(e.lastSmartTrim) < globalInterval && !numaUrgent {
 		return false
 	}
 
@@ -988,7 +995,7 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 		}
 	} else {
 		cacheInterval := 3 * time.Minute
-		if tier >= 3 || tightNUMA {
+		if tier >= 3 || numaUrgent {
 			cacheInterval = 90 * time.Second
 		}
 		if e.lastPurge.IsZero() || s.At.Sub(e.lastPurge) >= cacheInterval {
@@ -1001,7 +1008,7 @@ func (e *Engine) stepSmartSchedule(opts Options, s Sample, a *Assessment, family
 					flushed = true
 				}
 			}
-			if (tier >= 2 || tightNUMA) && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
+			if (tier >= 2 || numaUrgent) && e.cfg.Actions.PurgeStandby && s.Snap.HasPages &&
 				float64(s.Snap.Pages.Standby)/(1<<20) >= t.StandbyPurgeMinMB {
 				_ = winmem.FlushModified()
 				if err := winmem.PurgeLowPriorityStandby(); err == nil {
@@ -1504,7 +1511,8 @@ func isAFKNeverSuspend(name string) bool {
 		"applicationframehost.exe", "systemsettings.exe", "taskmgr.exe", "explorer.exe",
 		"hipsdaemon.exe", "hipstray.exe", "usysdiag.exe", "wsctrlsvc.exe", "msmpeng.exe",
 		"antigravity.exe", "omnicode.exe", "zcode.exe", "code.exe", "cursor.exe", "windsurf.exe",
-		"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "wechat.exe", "weixin.exe":
+		"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "wechat.exe", "weixin.exe",
+		"git.exe", "go.exe", "rg.exe", "node.exe", "python.exe", "pythonw.exe":
 		return true
 	default:
 		return false
@@ -1513,7 +1521,7 @@ func isAFKNeverSuspend(name string) bool {
 
 func isAFKBackgroundPollSpawner(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "language_server.exe", "git.exe", "rg.exe", "cockpit-tools.exe", "esurfingsvr.exe",
+	case "language_server.exe", "cockpit-tools.exe", "esurfingsvr.exe",
 		"wetype_update.exe", "nexus.exe", "ocr.exe", "doubaowork.exe":
 		return true
 	default:
@@ -1698,16 +1706,29 @@ func (e *Engine) stepAFKSpawnFreeze(s Sample, a *Assessment, family map[uint32]b
 		e.ensureAFKWatchdog()
 	}
 	if len(newlyFrozen) > 0 {
-		modeDesc := "后台离焦脉冲门控（每 45s 放行 1.2s 心跳，削减 97% 僵尸派生）"
-		if isDeepAFK {
-			modeDesc = fmt.Sprintf("离席满 %.0f 分钟零派生冻结（100%% 阻断夜间僵尸累积）", idleDur.Minutes())
+		if e.afkLogAt == nil {
+			e.afkLogAt = map[string]time.Time{}
 		}
-		e.record(journal.Entry{
-			Kind:    "storm_throttle",
-			Action:  "afk_freeze_spawners",
-			Reason:  fmt.Sprintf("全自动派生治理已对 %d 个高频派生源启用%s，切回前台或键鼠活动 80ms 内无感瞬时唤醒", len(newlyFrozen), modeDesc),
-			Targets: newlyFrozen,
-		})
+		var logTargets []journal.Target
+		for _, tgt := range newlyFrozen {
+			key := strings.ToLower(strings.TrimSpace(tgt.Name))
+			if lastLog, seen := e.afkLogAt[key]; !seen || s.At.Sub(lastLog) >= 10*time.Minute {
+				e.afkLogAt[key] = s.At
+				logTargets = append(logTargets, tgt)
+			}
+		}
+		if len(logTargets) > 0 {
+			modeDesc := "后台离焦脉冲门控（每 45s 放行 1.2s 心跳，削减 97% 僵尸派生）"
+			if isDeepAFK {
+				modeDesc = fmt.Sprintf("离席满 %.0f 分钟零派生冻结（100%% 阻断夜间僵尸累积）", idleDur.Minutes())
+			}
+			e.record(journal.Entry{
+				Kind:    "storm_throttle",
+				Action:  "afk_freeze_spawners",
+				Reason:  fmt.Sprintf("全自动派生治理已对 %d 个高频派生源启用%s，切回前台或键鼠活动 80ms 内无感瞬时唤醒", len(logTargets), modeDesc),
+				Targets: logTargets,
+			})
+		}
 	}
 }
 

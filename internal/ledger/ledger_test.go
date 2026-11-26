@@ -1,6 +1,8 @@
 package ledger
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -56,5 +58,33 @@ func TestLedgerPersistenceAndRates(t *testing.T) {
 	}
 	if after := reopened.Snapshot(); after.TotalSamples != 0 || len(after.DailyBaselines) != 0 {
 		t.Fatalf("expected clean reset, got %+v", after)
+	}
+}
+
+func TestLedgerSanitizesCorruptReboundKeys(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"started_at":"2026-11-26T00:00:00Z","updated_at":"2026-11-26T00:00:00Z","rebound_procs":{"\u0000\u0000xe":420,"msedge.exe":12}}`
+	if err := os.WriteFile(filepath.Join(dir, "ledger.json"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write seed ledger: %v", err)
+	}
+	lg, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	lg.RecordReboundProc("\x00bad", 5)
+	lg.RecordReboundProc("Chrome.exe", 3)
+	snap := lg.Snapshot()
+	if len(snap.ReboundProcs) != 2 || snap.ReboundProcs["msedge.exe"] != 12 || snap.ReboundProcs["chrome.exe"] != 3 {
+		t.Fatalf("unexpected sanitized rebound_procs: %+v", snap.ReboundProcs)
+	}
+	if err := lg.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Re-open failed: %v", err)
+	}
+	if got := reopened.Snapshot().ReboundProcs; len(got) != 2 || got["msedge.exe"] != 12 || got["chrome.exe"] != 3 {
+		t.Fatalf("expected persisted sanitized keys, got %+v", got)
 	}
 }

@@ -2571,19 +2571,32 @@ const dashboardHTML = `<!doctype html>
       winRestore: '<svg viewBox="0 0 14 14"><path d="M4.6 3.5V2.9a1.3 1.3 0 0 1 1.3-1.3h5.2a1.3 1.3 0 0 1 1.3 1.3v5.2a1.3 1.3 0 0 1-1.3 1.3h-.6" stroke-width="1.45"/><rect x="2.1" y="4.5" width="7.4" height="7.4" rx="1.4" stroke-width="1.55"/></svg>'
     };
 
-    function api(url, method, body) {
+    async function api(url, method, body) {
+      const m = method || "GET";
       const opts = {
-        method: method || "GET",
+        method: m,
+        cache: "no-store",
         headers: { "X-Memora-Token": TOKEN }
       };
       if (body !== undefined) {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(body);
       }
-      return fetch(url, opts).then(async r => {
-        if (!r.ok) throw new Error(await r.text() || ("HTTP " + r.status));
-        return r.json();
-      });
+      const r = await fetch(url, opts);
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt || ("HTTP " + r.status));
+      try {
+        return JSON.parse(txt);
+      } catch (e) {
+        if (m === "GET" && url === "/api/state" && e instanceof SyntaxError) {
+          await new Promise(res => setTimeout(res, 250));
+          const r2 = await fetch("/api/state?_t=" + Date.now(), opts);
+          const txt2 = await r2.text();
+          if (!r2.ok) throw new Error(txt2 || ("HTTP " + r2.status));
+          return JSON.parse(txt2);
+        }
+        throw e;
+      }
     }
 
     /* Frameless Window Drag / Resize / Button Controls */

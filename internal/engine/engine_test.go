@@ -198,7 +198,8 @@ func TestComputeSmartTierBoundaries(t *testing.T) {
 		{35, false, 1},
 		{22, false, 2},
 		{13.9, false, 3},
-		{35, true, 3},
+		{35, true, 1},
+		{25, true, 3},
 	}
 	for _, tc := range cases {
 		got, _ := computeSmartTier(tc.avail, tc.numa)
@@ -694,11 +695,22 @@ func TestLeakForecastAndReboundExponentialBackoff(t *testing.T) {
 	}
 
 	// Verify AFK safety classifications and Session 0 bloated service trimming.
-	if !isAFKNeverSuspend("explorer.exe") || !isAFKNeverSuspend("antigravity.exe") || isAFKNeverSuspend("language_server.exe") {
+	if !isAFKNeverSuspend("explorer.exe") || !isAFKNeverSuspend("antigravity.exe") || !isAFKNeverSuspend("git.exe") || !isAFKNeverSuspend("go.exe") || isAFKNeverSuspend("language_server.exe") {
 		t.Fatalf("unexpected isAFKNeverSuspend classification")
 	}
-	if !isAFKBackgroundPollSpawner("language_server.exe") || !isAFKBackgroundPollSpawner("git.exe") || isAFKBackgroundPollSpawner("explorer.exe") {
+	if !isAFKBackgroundPollSpawner("language_server.exe") || isAFKBackgroundPollSpawner("git.exe") || isAFKBackgroundPollSpawner("explorer.exe") {
 		t.Fatalf("unexpected isAFKBackgroundPollSpawner classification")
+	}
+
+	// Verify computeSmartTier does not trigger false Tier 3 NUMA alarms at high free RAM.
+	if tier, _ := computeSmartTier(55.0, true); tier != 1 {
+		t.Fatalf("expected Tier 1 at 55%% avail even with tightNUMA=true, got %d", tier)
+	}
+	if tier, _ := computeSmartTier(25.0, true); tier != 3 {
+		t.Fatalf("expected Tier 3 at 25%% avail with tightNUMA=true, got %d", tier)
+	}
+	if tier, _ := computeSmartTier(10.0, false); tier != 3 {
+		t.Fatalf("expected Tier 3 at 10%% avail, got %d", tier)
 	}
 
 	eng := New(config.Default(), nil)

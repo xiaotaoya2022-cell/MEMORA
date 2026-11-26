@@ -197,6 +197,8 @@ type Engine struct {
 	svcHealMu         sync.Mutex
 	svcHealInFlight   bool
 	lastServiceHealAt map[string]time.Time
+	stormLogAt        map[uint32]time.Time
+	afkLogAt          map[string]time.Time
 }
 
 // New builds an engine around already-loaded settings.
@@ -221,6 +223,8 @@ func New(cfg config.Config, jr *journal.Journal) *Engine {
 		afkParentPIDs:     map[uint32]uint32{},
 		procYieldMB:       map[string]float64{},
 		lastServiceHealAt: map[string]time.Time{},
+		stormLogAt:        map[uint32]time.Time{},
+		afkLogAt:          map[string]time.Time{},
 	}
 }
 

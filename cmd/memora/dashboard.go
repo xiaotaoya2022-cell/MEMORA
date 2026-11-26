@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -359,12 +361,12 @@ func (d *dashboardServer) appendHistoryLocked(a engine.Assessment, bd engine.Mem
 	}
 	pt := historyPoint{
 		Time:        at.Format("15:04:05"),
-		InUsePct:    100 - a.AvailPct,
-		AvailGB:     float64(a.Snap.AvailPhys) / (1 << 30),
-		PrivateWSGB: float64(a.PrivateWS) / (1 << 30),
-		SpawnRate:   a.SpawnRatePerMin,
-		VidGB:       float64(bd.VidBytes) / (1 << 30),
-		ZombieGB:    float64(bd.ZombieLeakBytes) / (1 << 30),
+		InUsePct:    finiteFloat(100 - a.AvailPct),
+		AvailGB:     finiteFloat(float64(a.Snap.AvailPhys) / (1 << 30)),
+		PrivateWSGB: finiteFloat(float64(a.PrivateWS) / (1 << 30)),
+		SpawnRate:   finiteFloat(a.SpawnRatePerMin),
+		VidGB:       finiteFloat(float64(bd.VidBytes) / (1 << 30)),
+		ZombieGB:    finiteFloat(float64(bd.ZombieLeakBytes) / (1 << 30)),
 	}
 	if len(d.history) >= maxHistoryPoints {
 		copy(d.history, d.history[1:])
@@ -381,8 +383,10 @@ func (d *dashboardServer) snapshotState() dashboardState {
 	var lData ledger.Data
 	if d.lg != nil {
 		lData = d.lg.Snapshot()
+		lData.ReboundProcs = nil
 	}
 	deepCopy := d.deep
+	deepCopy.ObjectTypes = nil
 	if len(deepCopy.ProcGroups) > 20 {
 		deepCopy.ProcGroups = deepCopy.ProcGroups[:20]
 	}
@@ -409,13 +413,21 @@ func (d *dashboardServer) snapshotState() dashboardState {
 		baseCmp = baselineComparisonDTO{
 			DaysTracked:      len(win),
 			FirstDate:        first.Date,
-			FirstMinInUseMB:  firstVal,
+			FirstMinInUseMB:  finiteFloat(firstVal),
 			LatestDate:       latest.Date,
-			LatestMinInUseMB: latestVal,
-			DriftMB:          drift,
+			LatestMinInUseMB: finiteFloat(latestVal),
+			DriftMB:          finiteFloat(drift),
 			Stable:           drift <= 512,
 		}
 	}
+
+	fc := engine.ComputeLeakForecast(d.latest.Snap, deepCopy.Leak)
+	fc.ProcObjRatePerHour = finiteFloat(fc.ProcObjRatePerHour)
+	fc.LeakMBPerHour = finiteFloat(fc.LeakMBPerHour)
+	fc.BytesPerZombieKB = finiteFloat(fc.BytesPerZombieKB)
+	fc.AvailMB = finiteFloat(fc.AvailMB)
+	fc.SampleHours = finiteFloat(fc.SampleHours)
+	fc.ETAHours = finiteFloat(fc.ETAHours)
 
 	return dashboardState{
 		Version:          version,
@@ -428,18 +440,25 @@ func (d *dashboardServer) snapshotState() dashboardState {
 		Assessment:       toAssessmentDTO(d.latest),
 		Breakdown:        d.breakdown,
 		Deep:             deepCopy,
-		LeakForecast:     engine.ComputeLeakForecast(d.latest.Snap, deepCopy.Leak),
+		LeakForecast:     fc,
 		ManagedProcesses: d.managed,
 		RecentJournal:    d.recentJ,
 		Ledger: ledgerDTO{
 			Data:          lData,
-			RestraintRate: lData.RestraintRate(),
-			AvgReclaimMB:  lData.AvgReclaimMB(),
+			RestraintRate: finiteFloat(lData.RestraintRate()),
+			AvgReclaimMB:  finiteFloat(lData.AvgReclaimMB()),
 		},
 		BloatCulprits:      culpritCopy,
 		BaselineComparison: baseCmp,
 		History:            histCopy,
 	}
+}
+
+func finiteFloat(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
 }
 
 func toAssessmentDTO(a engine.Assessment) assessmentDTO {
@@ -452,8 +471,8 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		TotalPhysBytes:  a.Snap.TotalPhys,
 		InUseBytes:      a.Snap.InUse(),
 		AvailPhysBytes:  a.Snap.AvailPhys,
-		InUsePct:        inUsePct,
-		AvailPct:        a.AvailPct,
+		InUsePct:        finiteFloat(inUsePct),
+		AvailPct:        finiteFloat(a.AvailPct),
 		CommitBytes:     a.Snap.Commit,
 		TotalCommit:     a.Snap.TotalCommit,
 		KernelTotal:     a.Snap.KernelTotal,
@@ -469,9 +488,9 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		ProcessCount:    a.ProcessCount,
 		ProcessComplete: a.ProcessComplete,
 		ResidualBytes:   a.Residual,
-		InUseSlope:      a.InUseSlope,
-		CommitSlope:     a.CommitSlope,
-		StandbySlope:    a.StandbySlope,
+		InUseSlope:      finiteFloat(a.InUseSlope),
+		CommitSlope:     finiteFloat(a.CommitSlope),
+		StandbySlope:    finiteFloat(a.StandbySlope),
 		Kind:            a.Kind,
 		Severity:        a.Severity,
 		FullscreenState: a.FullscreenState,
@@ -481,7 +500,7 @@ func toAssessmentDTO(a engine.Assessment) assessmentDTO {
 		SoftManaged:     a.SoftManaged,
 		SmartTier:             a.SmartTier,
 		SmartLabel:            a.SmartLabel,
-		SpawnRatePerMin:       a.SpawnRatePerMin,
+		SpawnRatePerMin:       finiteFloat(a.SpawnRatePerMin),
 		TopSpawners:           a.TopSpawners,
 		BurstSpawners:         a.BurstSpawners,
 		Orphans:               a.Orphans,
@@ -1750,8 +1769,19 @@ func (d *dashboardServer) handleWindowCtl(w http.ResponseWriter, r *http.Request
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		fallback, _ := json.Marshal(map[string]string{"error": "json marshal failed: " + err.Error()})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Length", strconv.Itoa(len(fallback)))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(fallback)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(data)
 }
