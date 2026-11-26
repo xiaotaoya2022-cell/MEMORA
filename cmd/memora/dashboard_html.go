@@ -3575,7 +3575,8 @@ const dashboardHTML = `<!doctype html>
         }
         if (detailLines.length > 0) {
           const sumLbl = isEn ? "Show Kernel Pool Tags & Service State Details" : "展开底层内核池标签与宿主服务状态明细";
-          extraDiag.push('<details style="margin-top:3px;font-size:11.5px;color:#475569;cursor:pointer"><summary style="font-weight:600;color:#334155;user-select:none">' + sumLbl + '</summary><div style="margin-top:4px;padding:5px 7px;background:rgba(15,23,42,0.03);border-radius:6px;cursor:default">' + detailLines.join("") + '</div></details>');
+          const openAttr = window.__kernelDetailsOpen ? ' open' : '';
+          extraDiag.push('<details' + openAttr + ' ontoggle="window.__kernelDetailsOpen=this.open" style="margin-top:3px;font-size:11.5px;color:#475569;cursor:pointer"><summary style="font-weight:600;color:#334155;user-select:none">' + sumLbl + '</summary><div style="margin-top:4px;padding:5px 7px;background:rgba(15,23,42,0.03);border-radius:6px;cursor:default">' + detailLines.join("") + '</div></details>');
         }
 
         const privTip = (isAdmin === false) ? (isEn ? " (UAC prompt if elevation needed)" : "（若需提权将自动请求 UAC）") : "";
